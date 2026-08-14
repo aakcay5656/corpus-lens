@@ -1,0 +1,14 @@
+dist
+build
+.next
+.turbo
+coverage
+node_modules
+pnpm-lock.yaml
+sample_dataset
+*.tsbuildinfo
+
+# Prose is hand-wrapped for readability; Prettier's reflow fights it and produces
+# noisy diffs in documents that are themselves scored deliverables.
+*.md
+

@@ -1,0 +1,18 @@
+{
+  "name": "@corpus-lens/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@corpus-lens/db": "workspace:*",
+    "@corpus-lens/rag": "workspace:*",
+    "@corpus-lens/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

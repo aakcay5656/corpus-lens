@@ -1,0 +1,35 @@
+# The provided corpus and the case document are confidential — never committed.
+# The README tells the reader where to place the dataset instead.
+sample_dataset/
+*.pdf
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# Task/tool caches
+.turbo/
+.eslintcache
+coverage/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# Local database volume, if bind-mounted
+postgres-data/

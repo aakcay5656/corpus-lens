@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    // The strictness contract, shared by every workspace. Module/target settings are
+    // deliberately NOT set here: NestJS needs CommonJS + decorator metadata and Next.js
+    // needs ESM + the bundler resolver, so each workspace declares its own.
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "verbatimModuleSyntax": false,
+    "isolatedModules": true,
+
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+
+    // Third-party .d.ts files are not our code to fix; checking them only adds noise.
+    "skipLibCheck": true
+  }
+}

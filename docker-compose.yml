@@ -1,0 +1,26 @@
+# Postgres + pgvector only. The apps are run with pnpm, not in containers: one store,
+# two processes (CLAUDE.md §3).
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: corpus-lens-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-corpus}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-corpus}
+      POSTGRES_DB: ${POSTGRES_DB:-rag}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/init-pgvector.sql:/docker-entrypoint-initdb.d/00-init-pgvector.sql:ro
+    healthcheck:
+      # `pnpm db:migrate` runs right after `docker compose up -d`, so the container must
+      # report healthy only once it actually accepts connections.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-corpus} -d ${POSTGRES_DB:-rag}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:

@@ -1,0 +1,12 @@
+{
+  // Solution file. It compiles nothing itself; it exists so `tsc -b` and the editor
+  // know the build order of the workspaces.
+  // Only the packages are listed: they are composite projects that the apps consume as
+  // built .d.ts files. The apps typecheck themselves with their own framework config.
+  "files": [],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./packages/db" },
+    { "path": "./packages/rag" }
+  ]
+}
