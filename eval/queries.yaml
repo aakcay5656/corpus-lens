@@ -1,0 +1,165 @@
+# Retrieval + abstention evaluation set.
+#
+# Q1-Q5 are the queries shipped with the dataset in sample_questions.md, transcribed
+# verbatim with their stated expected documents. The dataset note says the graders use
+# "these plus a private set in the same style", so they are the primary signal and must
+# not be edited to make the numbers look better.
+#
+# Q6-Q9 are added from the Step 0 corpus analysis (docs/CORPUS.md §3.2) to probe the
+# near-duplicate delivery reports, where 78 files are built from 15 distinct sentences
+# and the only distinguishing signal is filename metadata.
+#
+# Q10-Q12 are out-of-corpus. Correct behaviour is `answered: false` with no citations.
+#
+# Paths in `expect` are relative to the corpus root (the directory passed to ingest).
+# `expect` lists documents that MUST appear in the top-k; `also_useful` lists documents
+# that are good supporting context but are not required for a pass.
+
+version: 1
+corpus: sample_dataset/corpus
+default_k: 6
+
+queries:
+  # --- shipped with the dataset -------------------------------------------------
+  - id: q1-applovin-size
+    source: sample_questions.md
+    type: answerable
+    question: What is the maximum file size for an AppLovin playable, and how does it ship?
+    expect:
+      - network-specs-applovin.md
+    note: >
+      Tests exact-fact retrieval (5 MB, single self-contained HTML). The number and the
+      network name are the kind of literal tokens the keyword arm of RRF should win on.
+
+  - id: q2-sdk-init
+    source: sample_questions.md
+    type: answerable
+    question: How do I initialize the current Lumen SDK, and what happened to lumen.track?
+    expect:
+      - sdk-notes-v3.md
+    also_useful:
+      - sdk-notes-v2.md
+    note: >
+      The dataset states a good answer must say v2 is deprecated. Retrieving both files is
+      correct; the grading is on the answer preferring v3 and naming the supersession.
+      This is what motivates the conflict rule proposed in docs/CORPUS.md §3.3.
+    must_mention:
+      - LumenSDK.init
+      - deprecated
+
+  - id: q3-audio-separate-pass
+    source: sample_questions.md
+    type: answerable
+    question: Why are sound assets built in a separate pass?
+    expect:
+      - build-pipeline.md
+    also_useful:
+      - incident-postmortem-2026-03.md
+      - guides/asset-naming.md
+    note: >
+      Causal "why" question with no distinctive literal token — this one leans on the
+      vector arm, and is the counterweight to q1.
+
+  - id: q4-march-2026-rejections
+    source: sample_questions.md
+    type: answerable
+    question: What caused the March 2026 AppLovin rejections and what was fixed?
+    expect:
+      - incident-postmortem-2026-03.md
+    also_useful:
+      - changelogs/lumen-build-4.2.md
+      - build-pipeline.md
+    note: >
+      Date-scoped. The fix is also recorded in the 4.2 changelog, so a complete answer can
+      cite both; only the postmortem is required.
+
+  - id: q5-minimum-languages
+    source: sample_questions.md
+    type: answerable
+    question: Which languages must every playable ship with, and what is the fallback?
+    expect:
+      - localization-guide.md
+    also_useful:
+      - postmortems/2025-07-localization-regression.md
+      - qa-checklist.md
+    note: Enumeration question; answer must list all seven languages and English fallback.
+
+  # --- added from the Step 0 duplication finding ---------------------------------
+  - id: q6-specific-delivery-report
+    source: step-0-analysis
+    type: answerable
+    question: What QA issues were found in the December 2025 Merge Marina delivery?
+    expect:
+      - delivery-reports/2025-12-merge-marina.md
+    note: >
+      The duplication probe. 78 delivery reports share the same sentence pool, so the
+      body text of the right file is near-identical to dozens of wrong ones. Passing this
+      requires the date and game from the filename to reach the embedded text via the
+      breadcrumb, or the keyword arm to match them. If this fails, fix the breadcrumb
+      before touching chunk size.
+
+  - id: q7-cross-document-synthesis
+    source: step-0-analysis
+    type: answerable
+    question: Why does a low-contrast CTA keep coming up in delivery reports, and what is the rule?
+    expect:
+      - style-guide-ui.md
+    also_useful:
+      - delivery-reports/2025-12-merge-marina.md
+      - delivery-reports/2025-05-bubble-bakery.md
+    note: >
+      Inverse of q6: the canonical 4.5:1 rule lives in one small root document that the
+      78-file delivery-report cluster can easily crowd out. Watches for the failure mode
+      flagged in docs/CORPUS.md §5 "Open item for Step 6".
+
+  - id: q8-network-comparison
+    source: step-0-analysis
+    type: answerable
+    question: How do the Meta and Unity size limits differ?
+    expect:
+      - network-specs-unity-meta.md
+    note: Both facts are in one document; tests that the chunk was not split apart.
+
+  - id: q9-process-ownership
+    source: step-0-analysis
+    type: answerable
+    question: Who runs the delivery review, and can it be someone from the same pod?
+    expect:
+      - guides/review-process.md
+    also_useful:
+      - company-overview.md
+    note: >
+      The answer ("a developer from a different pod, never the author's own") lives in an
+      82-token guide — the smallest document class. Checks that short documents are not
+      buried by longer ones.
+
+  # --- out of corpus: must abstain ------------------------------------------------
+  - id: q10-vacation-policy
+    source: sample_questions.md
+    type: unanswerable
+    question: How many vacation days do Lumen employees get per year?
+    expect: []
+    note: >
+      Named by the dataset as the abstention case. Correct behaviour is `answered: false`
+      with zero citations. Note the trap: company-overview.md is topically close (it
+      describes the company, pods and headcount) and will retrieve with a plausible score,
+      so this exercises the score floor and the prompt rule together.
+
+  - id: q11-salary-bands
+    source: sample_questions.md
+    type: unanswerable
+    question: What is the salary band for a senior developer at Lumen?
+    expect: []
+    note: >
+      Second dataset-named abstention case. onboarding-new-dev.md mentions seniority and
+      developer progression without any compensation data — a citation pointing there is
+      a failure, not a partial credit.
+
+  - id: q12-unrelated-domain
+    source: step-0-analysis
+    type: unanswerable
+    question: What is the recommended HNSW ef_construction value for pgvector?
+    expect: []
+    note: >
+      Fully off-domain control. Should abstain on the retrieval score floor alone, before
+      the model is called — the cheap half of the two-layer abstention.
