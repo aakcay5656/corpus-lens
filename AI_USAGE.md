@@ -133,3 +133,48 @@ designed to catch — the model proposes a commit, I run it. The `.gitignore` be
 Step 1 while the commit happened at the end of Step 0, so the ordering in `PLAN.md` left a
 one-step window where the dataset was committable. Worth stating plainly rather than quietly
 fixing, since git history is a scored deliverable.
+
+**How it was actually resolved.** The first remediation did not work: `git commit --amend`
+landed on the tip commit rather than the root one, so the corpus stayed in history while
+Steps 1 and 2 got squashed into a single commit whose message still claimed the packages were
+"empty placeholders". Nothing had been pushed, so the history was rewritten from the root —
+`git reset --soft` to the root, unstage, `git rm --cached`, amend, then recommit the rest. Both
+commits now contain zero forbidden files, checked with `git ls-tree` rather than assumed.
+
+I chose **not** to split Steps 1 and 2 back apart. A reconstructed Step 1 commit would not
+compile, because `apps/api/src/main.ts` imports `@corpus-lens/db/client` and that module is
+Step 2's work. A history with a non-building commit in it is worse than an honest combined one,
+so the commit message was rewritten to describe both steps instead of hiding one.
+
+---
+
+### Step 3 — Shared contracts
+
+- **AI did:** wrote the nine Zod modules in `packages/shared` (role, error envelope, limits,
+  pagination, auth, search, answer, document, ingestion) with inferred types, replaced the
+  placeholder files in `apps/api` and `apps/web` with real contract imports, and ran the
+  boundary proofs.
+- **I wrote/rewrote:** two things that are security decisions rather than modelling ones.
+  `POST /ingest` originally took a `corpusDir` from the request body, which would have let any
+  authenticated admin point ingestion at any directory the API process can read — path
+  traversal presented as a feature. It now comes from `CORPUS_DIR` on the server. I also
+  removed the access token from the login response body: it travels in an httpOnly cookie, and
+  returning it in the body as well hands back precisely what the cookie flag exists to withhold.
+- **Got it wrong:** `pnpm build` reported success on a tree that could not actually compile.
+  I had deleted `packages/shared/src/package-info.ts`, but `packages/rag` still imported it —
+  and the build passed, because `tsc -b` leaves the output of deleted sources in `dist/` and the
+  stale `package-info.d.ts` was still there satisfying the import.
+- **How I caught it:** the green result did not match what I knew about the tree — I had just
+  deleted a module something else imported, so a passing build was the suspicious outcome, not
+  the reassuring one. Deleting `dist/` and rebuilding surfaced the real error immediately.
+
+**The fix is worth more than the bug.** Package builds now run `rm -rf dist && tsc -b`, so a
+removed source can never be propped up by its own leftover output. Removing the stale directory
+first also meant dropping the packages' `typecheck` script: for a composite project `tsc -b`
+already *is* the type check, and leaving both tasks in place would have had two processes
+running `rm -rf dist` in the same directory concurrently. Package type errors still surface,
+because each app's `typecheck` depends on the packages being built first.
+
+**Boundary proofs, run rather than asserted.** Renaming `Role`'s `ADMIN` member fails
+`apps/api` with `TS2322`; renaming `AnswerResponse.answered` fails `apps/web` with `TS2551`.
+That is the Step 3 acceptance criterion demonstrated in both directions rather than claimed.

@@ -3,15 +3,27 @@
 Single source of truth for progress. Claude Code updates this at the end of every
 step, before writing the completion report. Read it at the start of every session.
 
-**Current step:** 3 — Shared contracts
-**Last completed step:** 2 — Database schema
-**Last commit:** Step 0 = `efe2743` _(must be amended — see below)_ · Steps 1–2 pending
+**Current step:** 4 — Chunking + embeddings
+**Last completed step:** 3 — Shared contracts
+**Last commit:** `12dc838` · Step 3 pending
 
-> ⚠️ **Open action on the git history.** Commit `efe2743` tracked all 143 files of
-> `sample_dataset/` plus `PlayableFactory_AI_SE_Case_RAG.pdf`, both forbidden by
-> `CLAUDE.md` §1 and §5. `.gitignore` now covers them, but gitignore does not apply to
-> already-tracked files. Remediation commands are in the Step 1 report; until they are
-> run, the corpus is still in the history.
+| Step | Commit |
+|---|---|
+| 0 — Corpus recon | `a6e1ee9` |
+| 1 — Monorepo scaffold | `12dc838` _(shared with Step 2, see below)_ |
+| 2 — Database schema | `12dc838` |
+
+> **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
+> the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
+> the wrong commit — leaving Steps 1 and 2 squashed together. The history was rewritten
+> from the root (nothing had been pushed): both commits now carry zero forbidden files,
+> verified with `git ls-tree`. Steps 1 and 2 were left as one commit rather than split,
+> because a reconstructed Step 1 commit would not compile — `apps/api` already imports
+> `@corpus-lens/db/client`. The commit message describes both steps honestly instead.
+>
+> Remaining cleanup, whenever convenient: `git branch -D backup-before-rewrite` then
+> `git reflog expire --expire=now --all && git gc --prune=now`. Until then the old dirty
+> commits are still reachable from that backup branch.
 
 ---
 
@@ -22,7 +34,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 0 | Corpus recon | P0 | ✅ done |
 | 1 | Monorepo scaffold | P0 | ✅ done |
 | 2 | Database schema | P0 | ✅ done |
-| 3 | Shared contracts | P0 | ⬜ |
+| 3 | Shared contracts | P0 | ✅ done |
 | 4 | Chunking + embeddings | P0 | ⬜ |
 | 5 | Ingestion pipeline | P0 | ⬜ |
 | 6 | Hybrid retrieval | P0 | ⬜ |
@@ -69,6 +81,11 @@ substantial ones into `docs/ADR.md`.
 | 2 | The table set is assembled only in `client.ts`; no barrel file | Drizzle's query builder needs one schema object and `drizzle.config.ts` takes a glob, so nothing else has to re-export the tables (§7). |
 | 2 | HNSW kept at defaults (m=16, ef_construction=64) | With ~142 chunks the index barely affects latency; tuning numbers that cannot be measured at this scale would be theatre. Recorded so the choice reads as deliberate. |
 | 2 | The postgres.js connection filters notice codes `42P06`/`42P07`/`42710` and prints the rest | The migrator's `IF NOT EXISTS` statements raise these on every run after the first, and postgres.js dumps the whole notice object to stderr — indistinguishable from a crash to someone following the README. Silencing *all* notices would trade a cosmetic problem for a diagnostic one. |
+| 3 | `packages/shared` re-declares the role, document-status and ingestion enums rather than importing them from `packages/db` | Shared is consumed by the browser and must carry no database dependency. The values are duplicated deliberately; the row→DTO mapping in the API is the single place the two meet, so a mismatch fails there rather than silently. |
+| 3 | `POST /ingest` does **not** accept a corpus directory from the client | It would let an authenticated admin walk any directory the API process can read — path traversal dressed up as a feature. The directory comes from `CORPUS_DIR` on the server. |
+| 3 | Auth responses carry no tokens in the body | Access and refresh JWTs travel in httpOnly cookies; returning them in the body hands back exactly what the cookie flag exists to withhold. |
+| 3 | `Citation` carries both `marker` and `sourceIndex` | The server drops citation markers that do not match the supplied context, after which the surviving markers are no longer contiguous. The UI has to resolve what the model actually wrote, not what it should have written. |
+| 3 | Package builds are `rm -rf dist && tsc -b`, and packages no longer define a `typecheck` script | `tsc -b` leaves output for deleted sources, so a build can pass on artefacts whose source is gone — this actually happened in Step 3. Deleting first makes the build honest; these packages compile in under a second, so incrementality is worth nothing here. `typecheck` was removed because for a composite project `tsc -b` *is* the typecheck, and two tasks running `rm -rf dist` concurrently in one directory would race. |
 
 ---
 
