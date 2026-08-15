@@ -19,6 +19,7 @@ import { NestFactory } from "@nestjs/core";
 import cookieParser from "cookie-parser";
 
 import { AppModule } from "./app.module";
+import { setupSwagger } from "./common/swagger";
 import { apiEnv } from "./config/env";
 
 async function bootstrap(): Promise<void> {
@@ -32,12 +33,19 @@ async function bootstrap(): Promise<void> {
   // authenticated response (CLAUDE.md §9).
   app.enableCors({ origin: apiEnv.WEB_ORIGIN, credentials: true });
 
+  // Generated from the Zod contracts rather than from decorated DTO classes; see
+  // common/swagger.ts. Served at /docs, which CLAUDE.md §3 names as the API documentation
+  // deliverable.
+  setupSwagger(app, "docs");
+
   // So DatabaseModule's shutdown hook runs and the connection pool is released; without
   // it the process lingers on SIGINT instead of exiting.
   app.enableShutdownHooks();
 
   await app.listen(apiEnv.API_PORT);
-  new Logger("Bootstrap").log(`API listening on http://localhost:${apiEnv.API_PORT}`);
+  const logger = new Logger("Bootstrap");
+  logger.log(`API listening on http://localhost:${apiEnv.API_PORT}`);
+  logger.log(`OpenAPI docs at   http://localhost:${apiEnv.API_PORT}/docs`);
 }
 
 void bootstrap();

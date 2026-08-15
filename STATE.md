@@ -3,9 +3,9 @@
 Single source of truth for progress. Claude Code updates this at the end of every
 step, before writing the completion report. Read it at the start of every session.
 
-**Current step:** 9 — API endpoints
-**Last completed step:** 8 — Auth and authorization
-**Last commit:** `c84e806` · Step 8 pending
+**Current step:** 10 — App shell and auth flow
+**Last completed step:** 9 — API endpoints
+**Last commit:** `767c7b3` · Step 9 pending
 
 | Step | Commit |
 |---|---|
@@ -17,6 +17,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 5 — Ingestion pipeline | `1769e43` |
 | 6 — Hybrid retrieval | `1702e0b` |
 | 7 — Grounded answering | `c84e806` |
+| 8 — Auth and authorization | `767c7b3` |
 
 > **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
 > the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
@@ -45,7 +46,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 6 | Hybrid retrieval | P0 | ✅ done |
 | 7 | Grounded answering | P0 | ✅ done |
 | 8 | Auth and authorization | P0 | ✅ done |
-| 9 | API endpoints | P0 | ⬜ |
+| 9 | API endpoints | P0 | ✅ done |
 | 10 | App shell and auth flow | P0 | ⬜ |
 | 11 | Chat page | P0 | ⬜ |
 | 12 | Dashboard | P0 | ⬜ |
@@ -90,6 +91,14 @@ substantial ones into `docs/ADR.md`.
 | 3 | `POST /ingest` does **not** accept a corpus directory from the client | It would let an authenticated admin walk any directory the API process can read — path traversal dressed up as a feature. The directory comes from `CORPUS_DIR` on the server. |
 | 3 | Auth responses carry no tokens in the body | Access and refresh JWTs travel in httpOnly cookies; returning them in the body hands back exactly what the cookie flag exists to withhold. |
 | 3 | `Citation` carries both `marker` and `sourceIndex` | The server drops citation markers that do not match the supplied context, after which the surviving markers are no longer contiguous. The UI has to resolve what the model actually wrote, not what it should have written. |
+| 9 | `POST /ingest` returns **202 with a run id** and runs in the background | A full pass is ~60s against a hosted embedding model — 142 network calls — which exceeds every proxy and browser timeout between the API and the dashboard. The run row is the handle; polling `GET /ingest/runs/:id` is also what makes the dashboard's live status possible. Measured: the endpoint responds in **60ms**. |
+| 9 | `/answer` is written against the raw `Response`, not Nest's `@Sse()` | `@Sse()` takes an Observable of one event type; this needs two kinds — `token` frames as the model produces them, then one `result` frame with the validated citations. The citations cannot travel with the tokens because they only exist after the complete text has been checked against the supplied context. |
+| 9 | The chat provider availability check happens **before** SSE headers are flushed | Once a stream starts the status line is already 200 and the exception filter is powerless. Anything knowable up front — like an unconfigured chat model, which is a 503 — has to be raised while a normal error response is still possible. |
+| 9 | OpenAPI is generated from the Zod schemas via `z.toJSONSchema`, not from decorated DTO classes | Nest's Swagger integration wants classes, which would mean describing every payload twice and letting the two drift. Zod 4 emits JSON Schema natively, so the docs are *derived from the validator* and no bridging dependency is needed. `io: "input"` is used so request bodies document what a client may send rather than what the server fills in. |
+| 9 | Stats are SQL aggregates, including `percentile_cont` for p50/p95 | §6 says the dashboard is a read over `search_queries`, not a separate metrics system: a counter can drift from reality, a `count(*)` cannot. Percentiles are computed in Postgres because the point of p95 is the tail, and the tail is exactly what fetching a page of rows would discard. |
+| 9 | `abstainRate` is **null**, not 0, when nothing was asked | "0% abstention" and "no data" are different states, and a dashboard that renders them identically is lying about one of them. |
+| 9 | The throttler is subclassed to replace its default message | `ThrottlerGuard` renders the literal string `"ThrottlerException: Too Many Requests"` into the error envelope — an internal class name in a user-facing message. Same habit that leaks a SQL statement elsewhere. |
+| 9 | `db.execute<T>()` results are typed `unknown` for timestamps and narrowed | The generic on `execute` is an **assertion**, not a check. Declaring `last_indexed_at: Date` compiled cleanly and threw on the first real request, because a raw query skips the column-type decoding the query builder applies. |
 | 8 | Both guards are registered **globally**; routes opt out with `@Public()` rather than in with `@Auth()` | §9 requires authorization on every route. Per-controller `@UseGuards` satisfies that only until someone forgets, and Step 9's endpoints are exactly where forgetting is easy and invisible. This way a new route is authenticated by default and exposing one takes a deliberate decorator — the failure mode of forgetting is a locked door, not an open one. |
 | 8 | The API server is compiled with `tsc` and run with `node`; only the CLIs use `tsx` | **esbuild does not implement `emitDecoratorMetadata`.** Under `tsx` every Nest constructor injection resolves to `undefined` and all routes answer 500. Invisible from the test suite, because vitest transforms with SWC, which *does* emit it — 22 green tests coexisted with a completely broken server. |
 | 8 | `@typescript-eslint/consistent-type-imports` is disabled for `apps/api` | Same root cause from the other direction: `import type` deletes the runtime reference `emitDecoratorMetadata` needs, so obeying the rule would reintroduce undefined dependencies. The compiler cannot see the problem, so the rule is switched off for the app rather than suppressed import by import. |
@@ -178,11 +187,16 @@ schedule them.
   terminal that is cosmetic; in the chat page the user would watch "NO_ANSWER" type itself out
   and then be replaced. Buffer the first tokens, or suppress rendering until the response is
   known not to be the sentinel.
-- **Step 9:** rate limiting is still outstanding (`CLAUDE.md` §9 requires it on search and
-  answer). Not added in Step 8 because there was no route worth limiting yet.
-- **Step 9:** `POST /ingest` must not run the pipeline inline — see the note above — and every
-  new endpoint needs `@Roles("ADMIN")` where §9 says admin-only. The guards are global, so the
-  default is authenticated-but-any-role; admin-only is still an explicit decision per route.
+- ~~**Step 9:** rate limiting, background ingest, admin roles, `droppedMarkers` logging.~~ All
+  done and verified over HTTP. Rate limiting measured: 35 requests to `/search` gave 17×200 then
+  18×429 with a clean `RATE_LIMITED` envelope.
+- **Step 12:** `GET /ingest/runs/:id` caps events at 500. A large corpus can emit thousands, so
+  the dashboard's run detail needs pagination or a "showing first 500" note rather than silently
+  truncating.
+- **Step 14 (limitations):** the concurrent-ingestion guard is an in-process flag, which is
+  honest for a single instance and wrong for two. Say so rather than implying a distributed lock.
+- **Step 14 (limitations):** rate limiting is in-memory per instance, so limits multiply by
+  replica count.
 - **Step 14:** expired refresh tokens are never deleted. Harmless (they are rejected on expiry)
   but the table grows forever. A cleanup query or a `DELETE ... WHERE expires_at < now()` on
   startup belongs in the README's limitations if it is not implemented.
@@ -255,6 +269,12 @@ anything manual.
 - API: port 3001 · Web: port 3000 · MCP: port 3002
 - `pnpm --filter @corpus-lens/api run build && pnpm --filter @corpus-lens/api run start` runs the
   API. **Do not run `src/main.ts` with tsx** — see the decision table; it 500s on every route.
+- Endpoints: `POST /search` and `POST /answer` (any authenticated role) · `GET /documents`,
+  `GET /documents/:id`, `POST /ingest`, `GET /ingest/runs`, `GET /ingest/runs/:id`, `GET /stats`
+  (ADMIN only) · OpenAPI at `/docs`, JSON at `/docs-json` (13 paths, 14 Zod-derived schemas).
+- Rate limits: global 120/min; `/search` 30/min; `/answer` 10/min. In-memory, per instance.
+- `POST /answer` streams SSE: `event: token` frames then one `event: result` with the validated
+  citations, sources and timings; `event: error` if generation fails mid-stream.
 - Auth routes: `POST /auth/{login,refresh,logout}` are public, `POST /auth/register` is
   ADMIN-only, `GET /auth/me` needs any valid token. Cookies are `cl_access` (path `/`) and
   `cl_refresh` (path `/auth/refresh`), both HttpOnly + SameSite=Lax, Secure in production.

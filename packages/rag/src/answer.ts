@@ -100,7 +100,7 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
     ],
     maxOutputTokens: input.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
     temperature: input.temperature ?? DEFAULT_TEMPERATURE,
-    onToken: input.onToken,
+    onToken: guardSentinel(input.onToken),
   });
   const generateMs = Date.now() - generateStartedAt;
 
@@ -135,6 +135,46 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
     abstainReason: null,
     droppedMarkers: validated.droppedMarkers,
   });
+}
+
+/**
+ * Withholds streamed tokens until the response is known not to be a refusal.
+ *
+ * When the model declines it emits the raw `NO_ANSWER` sentinel, and a consumer streaming
+ * tokens straight through would render it: the user watches "NO_ANSWER" type itself out
+ * and then get replaced by the abstention state. It is an internal protocol token and
+ * should never reach a screen.
+ *
+ * The rule is minimal — hold tokens only while what has arrived so far is still a possible
+ * *prefix* of the sentinel, then release everything and stream freely. For a real answer
+ * that is one token of delay, since the first token almost never begins with "N"; for a
+ * refusal nothing is ever emitted. Wrapping it here rather than in the API means every
+ * consumer gets it, including any future one that forgets the problem exists.
+ */
+function guardSentinel(
+  onToken: ((token: string) => void) | undefined,
+): ((token: string) => void) | undefined {
+  if (onToken === undefined) return undefined;
+
+  let held = "";
+  let released = false;
+
+  return (token: string): void => {
+    if (released) {
+      onToken(token);
+      return;
+    }
+
+    held += token;
+    const normalised = held
+      .trim()
+      .replace(/[*`_\s]/g, "")
+      .toUpperCase();
+    if (NO_ANSWER_SENTINEL.replace(/_/g, "").startsWith(normalised)) return;
+
+    released = true;
+    onToken(held);
+  };
 }
 
 /**

@@ -590,3 +590,82 @@ Authorization: Bearer not.a.jwt     401
 The refresh cookie's `Path=/auth/refresh` is visible in that output and is deliberate: the
 long-lived credential is not attached to every ordinary API call, only to the one route that
 consumes it.
+
+---
+
+### Step 9 — API endpoints
+
+- **AI did:** wrote the stats contract, the RAG provider module, query logging, the search and
+  SSE answer endpoints, the documents, ingest and stats modules, the throttler configuration and
+  the Swagger setup; then exercised every route over HTTP with curl.
+- **I wrote/rewrote:** three things where the first attempt was the convenient shape rather than
+  the correct one.
+
+  **The ingest endpoint returned the finished run.** Awaiting the pipeline inside the request is
+  the obvious code and it is wrong here: a full pass is about a minute against a hosted
+  embedding model, which exceeds every proxy and browser timeout in between. It now returns 202
+  with the run row — measured at 60ms — and the client polls. That also happens to be what makes
+  the dashboard's live status possible, so the constraint improved the design.
+
+  **The SSE endpoint checked its chat provider too late.** The availability check sat inside the
+  service, which meant an unconfigured chat model would raise a 503 *after* the stream had
+  already sent a 200 status line, where the exception filter can no longer do anything. Anything
+  knowable before the first byte has to be checked before the first byte.
+
+  **The stats window was built with `sql.raw`.** The value is Zod-validated as a bounded integer,
+  so it was in fact safe — but "safe because of a validator three files away" is the reasoning
+  that stops being true the moment someone relaxes the validator. It is a bound parameter now,
+  which needs no argument at all.
+
+- **Got it wrong:** `GET /stats` returned 500 on the first real request, with
+  `row.last_indexed_at.toISOString is not a function`.
+
+  The generic on Drizzle's `db.execute<T>()` is an **assertion, not a check**. I had declared
+  `last_indexed_at: Date | null` and TypeScript simply believed me. A raw SQL query does not go
+  through the column-type decoding that the query builder applies, so Postgres's timestamp
+  arrived as a string. The compiler was satisfied, the build was green, and the route failed on
+  contact.
+
+- **How I caught it:** by calling the endpoint. It is the same lesson as Step 8 and it arrived
+  by the same route — everything compiled, everything passed, and the first curl found it. The
+  timestamp fields are now typed `unknown` and narrowed through one helper, which is the honest
+  description of what a raw query returns.
+
+**A dependency I did not add.** `@nestjs/swagger` builds its schemas from decorated DTO classes,
+which would have meant describing every payload twice — once as a Zod schema for the contract and
+the client, once as a class for the docs — with nothing keeping them in agreement. Zod 4 emits
+JSON Schema natively, so the documentation is generated from the same object that validates the
+request. Fourteen schemas across thirteen paths, no bridging library.
+
+**Verified over HTTP rather than asserted:**
+
+```
+POST /search    USER    200   0.0328 network-specs-applovin.md  (embed 551ms, retrieve 14ms)
+GET  /documents USER    403   ADMIN 200
+GET  /stats     USER    403   ADMIN 200
+POST /ingest    USER    403   ADMIN 202 in 60ms, status RUNNING
+POST /search    topK 9999     400  "topK: Too big: expected number to be <=20"
+POST /ingest    {"corpusDir":"/etc"} → ran against sample_dataset/corpus (field is not accepted)
+unauthenticated on all five new routes → 401
+
+/search rate limit, 35 requests:  17× 200 then 18× 429
+  {"error":{"code":"RATE_LIMITED","message":"Too many requests. Please wait a moment…"}}
+
+/answer SSE:  7 token frames, then 1 result frame
+  citations [(1, sdk-notes-v3.md), (2, sdk-notes-v2.md)]  timings embed 408 · generate 4860
+/answer SSE on an unanswerable question:  0 token frames, "NO_ANSWER" appears nowhere
+```
+
+That last line closes the parking-lot item from Step 7. When the model declines it emits the raw
+sentinel, and streaming it straight through would have made the user watch "NO_ANSWER" type
+itself out before being replaced. The guard holds tokens only while what has arrived is still a
+possible *prefix* of the sentinel — one token of delay for a real answer, nothing emitted for a
+refusal. It lives in `packages/rag` rather than in the API, so the MCP server and anything else
+added later gets it without knowing the problem exists.
+
+**Two things I fixed that were cosmetic but revealing.** The throttler's default message renders
+the literal string `"ThrottlerException: Too Many Requests"` into the error envelope — an
+internal class name in a user-facing field, which is the same habit that leaks a SQL statement
+somewhere more serious. And `abstainRate` now returns null rather than 0 when no questions have
+been asked, because "0% abstention" and "no data" are different states and a dashboard that draws
+them identically is lying about one of them.

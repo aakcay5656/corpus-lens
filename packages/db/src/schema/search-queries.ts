@@ -48,6 +48,17 @@ export const searchQueries = pgTable(
     /** Which chunks were put in front of the model, for auditing a specific answer. */
     chunkIds: uuid("chunk_ids").array(),
 
+    /**
+     * Citation markers the model wrote that pointed at no supplied source, dropped by the
+     * validator before the answer was returned.
+     *
+     * Recorded because it is the earliest signal that generation has regressed: a prompt
+     * change or a larger context that starts producing invented references shows up here
+     * long before anyone notices a wrong answer, since the validator hides the symptom by
+     * design.
+     */
+    droppedMarkers: integer("dropped_markers").array(),
+
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
