@@ -3,9 +3,9 @@
 Single source of truth for progress. Claude Code updates this at the end of every
 step, before writing the completion report. Read it at the start of every session.
 
-**Current step:** 12 — Dashboard
-**Last completed step:** 11 — Chat page
-**Last commit:** `e8e66dd` · Step 11 pending
+**Current step:** 13 — MCP server
+**Last completed step:** 12 — Dashboard
+**Last commit:** `c119f58` · Step 12 pending
 
 | Step | Commit |
 |---|---|
@@ -20,6 +20,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 8 — Auth and authorization | `767c7b3` |
 | 9 — API endpoints | `0f2c553` |
 | 10 — App shell and auth flow | `e8e66dd` |
+| 11 — Chat page | `c119f58` |
 
 > **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
 > the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
@@ -51,7 +52,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 9 | API endpoints | P0 | ✅ done |
 | 10 | App shell and auth flow | P0 | ✅ done |
 | 11 | Chat page | P0 | ✅ done |
-| 12 | Dashboard | P0 | ⬜ |
+| 12 | Dashboard | P0 | ✅ done |
 | 13 | MCP server | P0 | ⬜ |
 | 14 | Documentation | P0 | ⬜ |
 | 15 | Self-updating ingestion | P2 | ⬜ |
@@ -93,6 +94,13 @@ substantial ones into `docs/ADR.md`.
 | 3 | `POST /ingest` does **not** accept a corpus directory from the client | It would let an authenticated admin walk any directory the API process can read — path traversal dressed up as a feature. The directory comes from `CORPUS_DIR` on the server. |
 | 3 | Auth responses carry no tokens in the body | Access and refresh JWTs travel in httpOnly cookies; returning them in the body hands back exactly what the cookie flag exists to withhold. |
 | 3 | `Citation` carries both `marker` and `sourceIndex` | The server drops citation markers that do not match the supplied context, after which the surviving markers are no longer contiguous. The UI has to resolve what the model actually wrote, not what it should have written. |
+| 12 | Headline numbers are **stat tiles, not charts**; only volume-over-time is plotted | A single current value rendered as a one-bar chart adds axes and a plot area to communicate one number. The one genuine time series gets a single-hue column chart with no legend — a legend for one series just repeats the title. |
+| 12 | The chart is ~30 lines of divs and CSS, with no charting dependency and no client JavaScript | It is one single-series column chart; a charting library would be the largest dependency in the web app by an order of magnitude. Hover is CSS-only, so the whole dashboard stays server-rendered. |
+| 12 | `loading.tsx` exists **only** on `/chat`, not app-wide | A `loading.tsx` creates a Suspense boundary, and once the shell has flushed the status line is written — so `notFound()` beneath it cannot produce a 404 and a missing document answered **200**. Measured both ways: with the boundary 200, without it 404. Dashboard detail pages need the status, chat has no not-found path. Nothing is lost: those pages render in tens of milliseconds and the loading states that matter are in the components that actually wait. |
+| 12 | The dashboard layout carries sub-navigation but **no** authorization check | The Step 10 lesson, applied rather than relearned: React builds a layout's children before the layout resolves, so a gate there runs alongside the pages instead of in front of them. Every page calls `requireRole` itself. |
+| 12 | `chunksMissingEmbedding` gets its own stat tile with a warning tone | A chunk with no vector is invisible to the vector arm, so retrieval is quietly incomplete and nothing else in the system would ever say so. |
+| 12 | Filters navigate to a URL rather than fetching into client state | The filtered view becomes a real address — linkable, bookmarkable, reloadable — and the table stays server-rendered instead of moving the document list into browser memory. |
+| 12 | Query strings are rebuilt from known keys, not forwarded verbatim | The API validates its own input, but passing an arbitrary client query string straight through is how an unintended parameter reaches a backend that happens to understand it. |
 | 11 | A citation chip resolves `marker` → `citation.sourceIndex`, never "nth citation is nth source" | The Step 7 parking-lot item, and the naive version is silently wrong rather than broken. Demonstrated with the real `[1][2][6]` case: the third chip would scroll to `unity-meta.md` instead of `build-pipeline.md`. A citation exists so a claim can be checked; one pointing at the wrong passage breaks that while still looking right. |
 | 11 | The SSE reader holds a trailing partial frame between network chunks | Same rule as the server's provider parser, for the same reason: a chunk boundary lands mid-JSON routinely, and a parser assuming whole frames works on localhost and drops tokens the moment there is real latency. |
 | 11 | `fetch` + `ReadableStream`, not `EventSource` | `EventSource` only issues GET and cannot send a body or credentials, and the question has to be POSTed. |
@@ -209,9 +217,9 @@ schedule them.
 - ~~**Step 9:** rate limiting, background ingest, admin roles, `droppedMarkers` logging.~~ All
   done and verified over HTTP. Rate limiting measured: 35 requests to `/search` gave 17×200 then
   18×429 with a clean `RATE_LIMITED` envelope.
-- **Step 12:** `GET /ingest/runs/:id` caps events at 500. A large corpus can emit thousands, so
-  the dashboard's run detail needs pagination or a "showing first 500" note rather than silently
-  truncating.
+- ~~**Step 12:** the 500-event cap on `GET /ingest/runs/:id`.~~ Done — the run detail page says
+  "Showing the first 500 — the run produced more" when the cap is hit, instead of implying the
+  list is complete.
 - **Step 14 (limitations):** the concurrent-ingestion guard is an in-process flag, which is
   honest for a single instance and wrong for two. Say so rather than implying a distributed lock.
 - **Step 14 (limitations):** rate limiting is in-memory per instance, so limits multiply by
@@ -292,6 +300,11 @@ anything manual.
   matching passage, retrieved passages with breadcrumb + fused score + per-arm ranks, distinct
   abstention state, latency split, Enter-to-send. Verified against both an answerable and an
   unanswerable question.
+- Dashboard is live at `/dashboard` (overview), `/dashboard/documents` (+ `/[id]`),
+  `/dashboard/runs` (+ `/[id]`). Verified: ADMIN 200 on all, USER 307 to `/chat` on all;
+  142 documents paginated 20/page; `search=merge-marina` narrows to 10, `search=sdk` to 2;
+  `search=%` returns no matches (the LIKE metacharacter is escaped, not a wildcard);
+  a missing document or run is a real **404**.
 - Routes: `/login` (public) · `/chat` (any session) · `/dashboard` (ADMIN). `/` redirects to
   `/chat`. Verified: anonymous → 307 to `/login?next=…`; USER on `/dashboard` → 307 to `/chat`
   with **zero** dashboard content in the payload; ADMIN → 200.

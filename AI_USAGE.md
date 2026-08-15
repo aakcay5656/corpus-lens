@@ -805,3 +805,73 @@ controls are 44px tall, the header sheds the email below `sm`, and the source ca
 long titles rather than overflowing. What I have *not* done is look at it at 375px in a real
 browser, and the plan asks for that explicitly. It is the one claim in this report I would want
 to check myself before believing.
+
+---
+
+### Step 12 — Dashboard
+
+- **AI did:** wrote the formatters, three more primitives (stat tile, table, pagination), the
+  overview with its index-health and analytics cards, the volume chart, the documents table with
+  filtering and pagination, the document detail with its chunks, the ingestion run list and
+  detail, and the live "run ingestion" button; then drove every page and every filter against
+  real data.
+- **I wrote/rewrote:** what gets drawn as a chart. The first pass had a chart per metric — a
+  small bar chart for document counts, another for latency. Almost none of that data is a chart:
+  a single current value is a stat tile, and rendering it as a one-bar bar chart adds an axis and
+  a plot area in order to communicate one number. Exactly one thing here is a genuine series over
+  time, and that one gets a column chart. The rest are numbers, laid out as numbers.
+- **Got it wrong:** a missing document answered **HTTP 200** with the not-found page.
+
+  This is the same defect I diagnosed in Step 10 and it had followed me here. `notFound()` can
+  only set a status while the response headers are still open; a `loading.tsx` creates a Suspense
+  boundary, the shell flushes, the status line is written as 200, and the `notFound()` thrown
+  afterwards is too late. In Step 10 I worked around it by moving the *authorization* decision
+  into middleware, which fixed the case I was looking at and left the underlying cause in place
+  for every other `notFound()` in the app.
+
+- **How I caught it:** by checking status codes rather than bodies. `curl -w '%{http_code}'`
+  against a random UUID returned 200 while the page said "Page not found" — the content was
+  right and the contract was wrong, which is the combination a browser will never show you.
+
+  This time I measured the cause instead of routing around it: removed the boundary, rebuilt,
+  and the same request returned 404. So `loading.tsx` now exists on `/chat` alone — the one route
+  with no not-found path — and the dashboard's detail pages get correct statuses. Nothing is
+  lost, because those pages are server-rendered in tens of milliseconds and the loading states
+  that actually matter live in the components that wait: the streaming answer skeleton and the
+  ingestion button's spinner.
+
+**A decision carried forward rather than relearned.** The dashboard layout holds sub-navigation
+and deliberately no role check, because Step 10 established that React builds a layout's children
+before the layout resolves — a gate there runs alongside the pages instead of in front of them.
+Every page calls `requireRole` itself, and the middleware has already redirected before either
+runs.
+
+**Two small things that are really product decisions.** `chunksMissingEmbedding` has its own tile
+with a warning tone rather than being folded into the chunk count: a chunk with no vector is
+invisible to the vector arm, so retrieval is silently incomplete and nothing else in the system
+would ever surface it. And the abstain rate renders as "—" rather than "0%" when nothing has been
+asked, because a dashboard that draws "no data" and "nothing was refused" identically is lying
+about one of them.
+
+**Verified against real data:**
+
+```
+ADMIN 200 · USER 307 → /chat        on /dashboard, /dashboard/documents, /dashboard/runs
+documents            1–20 of 142 · page 2 → 21–40 of 142
+search=merge-marina  1–10 of 10        search=sdk  1–2 of 2
+search=%             no matches        (the LIKE metacharacter is escaped, not a wildcard)
+document detail      Lumen SDK v2 (DEPRECATED) · lifecycle deprecated · version 2
+missing document     404              missing run  404
+POST /ingest         202, run appears in the table as API COMPLETED within 4s
+overview             142 documents · 142 chunks · 27,325 tokens · 0 failed · 0 missing embeddings
+```
+
+The `search=%` line is worth keeping: an unescaped `%` in a LIKE pattern matches everything, so
+the filter would have appeared to work while silently not filtering. It is not an injection —
+the term is a bound parameter — but it is the kind of bug that only shows up when someone types
+a punctuation character into a search box.
+
+**Still not verified, same as last step:** I have checked the layout composition — flex-wrap
+everywhere, tables that scroll inside their own container rather than overflowing the page, no
+fixed pixel widths — but I have not opened any of this at 375px in a real browser. That remains
+the one claim in these last three reports I would want to check myself.
