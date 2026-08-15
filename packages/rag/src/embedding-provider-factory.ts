@@ -21,6 +21,12 @@ export interface EmbeddingProviderConfig {
   model?: string;
   /** Required for the `openai` kind. Never logged. */
   apiKey?: string;
+  /**
+   * Overrides the API origin for the `openai` kind. The `/v1/embeddings` wire format is
+   * spoken by OpenRouter, Azure OpenAI and self-hosted servers as well, so the vendor is
+   * configuration rather than code.
+   */
+  baseUrl?: string;
   timeoutMs?: number;
 }
 
@@ -45,6 +51,7 @@ export function createEmbeddingProvider(config: EmbeddingProviderConfig): Embedd
     apiKey,
     model: config.model ?? DEFAULT_EMBEDDING_MODEL,
     dimensions: config.dimensions,
+    baseUrl: config.baseUrl,
     timeoutMs: config.timeoutMs,
   });
 }

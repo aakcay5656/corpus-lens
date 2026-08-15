@@ -48,6 +48,7 @@ async function main(): Promise<void> {
     dimensions: ingestEnv.EMBEDDING_DIMENSIONS,
     model: ingestEnv.EMBEDDING_MODEL,
     apiKey: ingestEnv.OPENAI_API_KEY,
+    baseUrl: ingestEnv.OPENAI_BASE_URL,
   });
 
   console.log(`corpus:    ${corpusDir}`);

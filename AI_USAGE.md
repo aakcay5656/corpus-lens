@@ -324,3 +324,95 @@ I ran build, test, lint and format — and `apps/mcp/src/main.ts` still imported
 `package-info` module Step 4 deleted. The commit builds and tests clean but does not typecheck.
 Fixed as part of this step and the verification block now runs all five. Worth recording
 because it is the second time a gate I did not run was the one that mattered.
+
+---
+
+### Step 6 — Hybrid retrieval
+
+- **AI did:** wrote the RRF implementation, the retriever over its repository interface, the
+  two SQL arms, the `pnpm eval` runner, and 24 new tests; then measured the whole thing
+  against the corpus twice — once with the offline embedder and once with
+  `text-embedding-3-small`.
+- **I wrote/rewrote:** the refusal to tune. When the eval came back 8/9 under the offline
+  embedder, the obvious move was to add the `doc_type` prior that `docs/CORPUS.md` §5 had
+  pre-registered for exactly this failure. I measured whether it would work before writing it,
+  and it would not — twice, for two different reasons. That measurement is the actual output of
+  this step; the code is the easy part.
+- **Got it wrong:** two things, one of which had made the headline feature not work at all.
+
+  **(1) The keyword arm was returning nothing, so "hybrid" retrieval was vector-only.** Every
+  Postgres tsquery constructor — `websearch_to_tsquery`, `plainto_tsquery`, `phraseto_tsquery`
+  — joins its terms with AND. Passing a question through therefore demanded that *every* lexeme
+  appear in one 200-token chunk:
+
+  ```
+  websearch_to_tsquery('english', 'How many vacation days do Lumen employees get per year?')
+    → 'mani' & 'vacat' & 'day' & 'lumen' & 'employe' & 'get' & 'per' & 'year'
+  ```
+
+  Zero matches. RRF was dutifully fusing one list with an empty one and every test passed,
+  because the unit tests fed it two lists and the SQL was never exercised without a database.
+
+  **(2) A provider error body wrote a partial API key into the database.** The comment above
+  `readBodySafely` asserted that provider error bodies "contain no secrets". A real 401 proved
+  otherwise: the response echoes the key back masked as `sk-or-v1***…73bf` — with its true last
+  four characters — and that string lands in `ingestion_events.message`, which the admin
+  dashboard renders. CLAUDE.md §9 says never log an API key, and a partial key is still a key.
+  Error bodies are now scrubbed of anything key-shaped before being kept.
+
+- **How I caught it:** the first one came from a column in my own output. The eval printer shows
+  each passage's rank in each arm, and the `k=` column was `—` on almost every row. I had added
+  that column for debugging later, and it caught the bug on its first run — which is the
+  argument for exposing `vectorRank` and `keywordRank` on the passage DTO rather than just the
+  fused score. The second came from an accident: the key I was given was an OpenRouter key, so
+  the request 401'd against `api.openai.com`, and reading the failure showed the key in it.
+
+**The pre-registered hypothesis, tested and refuted twice.** Step 0 predicted that the 78
+near-duplicate delivery reports would crowd out root reference documents, and committed in
+advance to a `doc_type` prior in fusion as the remedy. Both halves turned out to be wrong:
+
+- *With the offline embedder*, `style-guide-ui.md` reached fusion at rank 21 but sat behind five
+  **other** non-delivery-report documents, so capping the cluster would have promoted
+  `company-overview` and `sdk-notes-v3` instead of the style guide.
+- *With real embeddings*, it is worse and clearer: **all 40 candidates — 20 vector, 20 keyword —
+  are delivery reports.** `style-guide-ui.md` is at vector rank 69 and keyword rank 86 of 142.
+  It never reaches fusion at all, so no fusion-stage rule of any kind can promote it. Raising
+  the candidate budget to the entire corpus does not help either: its fused score would be
+  0.0146 against ~0.030 for the cluster.
+
+The crowding is real. It just happens one stage earlier than the hypothesis assumed, which is
+the sort of thing only measurement tells you.
+
+**What q7 actually is.** One more measurement settled it. The same document ranks **1st in both
+arms** for "What is the CTA contrast rule?" and 69th/86th for "Why does a low-contrast CTA keep
+coming up in delivery reports, and what is the rule?". The phrase "delivery reports" in the
+query activates the 78-document cluster in both arms simultaneously. So q7 is a multi-intent
+query — half of it is answered correctly and the other half is drowned — and the remedy is query
+decomposition or reranking, both already scoped in Step 19. It is not a defect in fusion, in
+chunking, or in the breadcrumb.
+
+I left q7 failing and the eval exiting non-zero rather than editing the query or tuning fusion
+around it. `eval/queries.yaml` says the shipped queries "must not be edited to make the numbers
+look better", and a probe I wrote myself deserves the same treatment.
+
+**Measured, with `text-embedding-3-small`:**
+
+```
+answerable queries: 8/9
+q1 applovin size limit      rank 1     q6 december merge marina    rank 4
+q2 sdk init / lumen.track   rank 1     q7 cta contrast rule        MISS (multi-intent)
+q3 audio separate pass      rank 2     q8 meta vs unity limits     rank 1
+q4 march 2026 rejections    rank 1     q9 delivery review owner    rank 1
+q5 minimum languages        rank 1
+
+all five shipped dataset queries (q1–q5) return their expected document at rank 1
+re-embed 142 chunks 65s · search ~450ms end to end, almost all of it the embedding call
+```
+
+**A finding Step 7 gets for free.** Across the eval set, in-corpus queries top out at
+0.0325–0.0328, while the fully off-domain q12 tops out at **0.0164** — which is exactly
+`1/(60+1)`, the signature of a single arm contributing with nothing agreeing with it. That is a
+2× separation for the retrieval score floor, and it falls out of RRF's structure rather than
+from a threshold I picked. The honest caveat is in the same numbers: q10 and q11 are also
+unanswerable and still top 0.0325, because `company-overview.md` is genuinely about the company.
+The floor is the cheap half of abstention; the prompt rule has to do the rest.

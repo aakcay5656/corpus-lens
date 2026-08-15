@@ -1,7 +1,7 @@
 import { EmbeddingError, type EmbeddingProvider } from "./embeddings";
 
 /**
- * OpenAI embeddings over plain `fetch`.
+ * Embeddings over the OpenAI `/v1/embeddings` wire format, via plain `fetch`.
  *
  * Why not the `openai` SDK: this is one POST to one endpoint, and the thing that has to
  * be demonstrable here is the failure policy — a bounded timeout and exactly one retry
@@ -9,14 +9,21 @@ import { EmbeddingError, type EmbeddingProvider } from "./embeddings";
  * so using it would mean either inheriting a policy I did not choose or configuring it
  * off and writing this anyway. Roughly fifty lines of `fetch` is the smaller thing to
  * own and defend.
+ *
+ * The base URL is configurable because that wire format is not exclusive to OpenAI —
+ * OpenRouter, Azure OpenAI and a self-hosted vLLM all speak it. One env var is the whole
+ * cost of not being locked to one vendor, and it was not hypothetical: the key this was
+ * first run against was an OpenRouter key.
  */
 
-const EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings";
+export const DEFAULT_EMBEDDINGS_BASE_URL = "https://api.openai.com/v1";
 
 export interface OpenAiEmbeddingConfig {
   apiKey: string;
   model: string;
   dimensions: number;
+  /** Origin + path prefix, without a trailing slash. `/embeddings` is appended. */
+  baseUrl?: string;
   timeoutMs?: number;
 }
 
@@ -58,7 +65,7 @@ async function requestEmbeddings(
 ): Promise<number[][]> {
   let response: Response;
   try {
-    response = await fetch(EMBEDDINGS_URL, {
+    response = await fetch(`${config.baseUrl ?? DEFAULT_EMBEDDINGS_BASE_URL}/embeddings`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -121,15 +128,36 @@ async function requestEmbeddings(
 }
 
 /**
- * Error bodies help diagnose a 400 and OpenAI's contain no secrets, so a truncated body
- * is kept. It stays server-side: the API's exception filter is what stops any of this
- * reaching a client (CLAUDE.md §7).
+ * Error bodies are worth keeping — a 400 is undiagnosable without one — but not verbatim.
+ *
+ * The original version of this comment claimed provider error bodies "contain no
+ * secrets". That was wrong, and a real 401 proved it: the response echoes the API key
+ * back, partially masked but with its real last four characters, and this string is
+ * stored in `ingestion_events.message` and rendered in the admin dashboard. CLAUDE.md §9
+ * says never log an API key, and a partial key is still a key.
+ *
+ * So anything that looks like a credential is scrubbed before the body is kept. The body
+ * stays server-side regardless — the API's exception filter is what stops it reaching a
+ * client (CLAUDE.md §7) — but defence in depth is the point when the alternative is
+ * writing key material to a table.
  */
 async function readBodySafely(response: Response): Promise<string> {
   try {
     const text = await response.text();
-    return text.slice(0, 500);
+    return redactSecrets(text).slice(0, 500);
   } catch {
     return "<unreadable body>";
   }
+}
+
+/**
+ * Replaces anything shaped like an API key. Deliberately broad: it matches the masked
+ * forms providers echo back (`sk-or-v1***...73bf`) as well as whole keys, because the
+ * cost of over-redacting an error message is a slightly less useful log line and the cost
+ * of under-redacting it is a credential in the database.
+ */
+function redactSecrets(text: string): string {
+  return text
+    .replace(/\b(sk|pk|rk)-[A-Za-z0-9._*-]{8,}/g, "$1-<redacted>")
+    .replace(/\bBearer\s+[A-Za-z0-9._*-]{8,}/gi, "Bearer <redacted>");
 }

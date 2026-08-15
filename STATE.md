@@ -3,9 +3,9 @@
 Single source of truth for progress. Claude Code updates this at the end of every
 step, before writing the completion report. Read it at the start of every session.
 
-**Current step:** 6 — Hybrid retrieval
-**Last completed step:** 5 — Ingestion pipeline
-**Last commit:** `7d7ee00` · Step 5 pending
+**Current step:** 7 — Grounded answering
+**Last completed step:** 6 — Hybrid retrieval
+**Last commit:** `1769e43` · Step 6 pending
 
 | Step | Commit |
 |---|---|
@@ -14,6 +14,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 2 — Database schema | `12dc838` |
 | 3 — Shared contracts | `4de1015` |
 | 4 — Chunking + embeddings | `7d7ee00` |
+| 5 — Ingestion pipeline | `1769e43` |
 
 > **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
 > the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
@@ -39,7 +40,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 3 | Shared contracts | P0 | ✅ done |
 | 4 | Chunking + embeddings | P0 | ✅ done |
 | 5 | Ingestion pipeline | P0 | ✅ done |
-| 6 | Hybrid retrieval | P0 | ⬜ |
+| 6 | Hybrid retrieval | P0 | ✅ done |
 | 7 | Grounded answering | P0 | ⬜ |
 | 8 | Auth and authorization | P0 | ⬜ |
 | 9 | API endpoints | P0 | ⬜ |
@@ -87,6 +88,15 @@ substantial ones into `docs/ADR.md`.
 | 3 | `POST /ingest` does **not** accept a corpus directory from the client | It would let an authenticated admin walk any directory the API process can read — path traversal dressed up as a feature. The directory comes from `CORPUS_DIR` on the server. |
 | 3 | Auth responses carry no tokens in the body | Access and refresh JWTs travel in httpOnly cookies; returning them in the body hands back exactly what the cookie flag exists to withhold. |
 | 3 | `Citation` carries both `marker` and `sourceIndex` | The server drops citation markers that do not match the supplied context, after which the surviving markers are no longer contiguous. The UI has to resolve what the model actually wrote, not what it should have written. |
+| 6 | The keyword arm rewrites the question to **OR** before `websearch_to_tsquery` | Every Postgres tsquery constructor ANDs its terms, so an 8-term question demanded all 8 lexemes in one 200-token chunk and matched nothing. The keyword arm was returning zero rows for most of the eval set and RRF was fusing one list with an empty one — hybrid retrieval was silently vector-only. OR gives recall; `ts_rank` supplies precision by scoring lexeme coverage, so AND is demoted from a filter to a ranking signal. |
+| 6 | `websearch_to_tsquery`, never `to_tsquery` | It is the only constructor that cannot be made to raise on hostile input — `to_tsquery` throws a syntax error on an unbalanced quote, turning a malformed search into a 500. With the OR rewrite going through it, there is no query-injection surface even though the terms come from a user. |
+| 6 | The vector arm orders by the raw distance expression, not by `1 - distance` | The HNSW index is built on the `<=>` operator; wrapping it in arithmetic makes the expression unindexable and forces a sequential scan. The `1 - distance` value is still selected, for display only. |
+| 6 | Fusion reads only ranks; raw cosine and `ts_rank` are carried but never combined | The two are incomparable — cosine is dense in 0.2–0.9, `ts_rank` is unbounded and routinely 0.05 for an excellent match. Any weighted sum needs a normalisation that is itself a tuned guess and that silently changes when the embedding model is swapped. |
+| 6 | Candidate budget is 20 per arm for a top-6 answer | Fusion can only reorder what it was given: a chunk ranked 13th by vectors and 3rd by keywords should win, and cannot if the vector arm only returned 6. |
+| 6 | **Refuted:** the `doc_type` prior pre-registered in `docs/CORPUS.md` §5 would not fix the q7 crowding | Measured twice, once per embedder, and wrong both times for different reasons. With real embeddings **all 40 candidates (20 vector + 20 keyword) are delivery reports** and `style-guide-ui.md` is at vector rank 69 / keyword rank 86 — it never reaches fusion, so no fusion-stage rule can promote it. The crowding is real but happens one stage earlier than §5 assumed. No prior was added. |
+| 6 | q7 is a **multi-intent query**, not a retrieval bug — remedy deferred to Step 19 | The same document ranks **1st in both arms** for "What is the CTA contrast rule?" and 69th/86th for "Why does a low-contrast CTA keep coming up in delivery reports, and what is the rule?". The phrase "delivery reports" activates the 78-document cluster in both arms. The fix is query decomposition or reranking, both already listed under Step 19; raising the candidate budget to the full corpus does not help (fused score would be 0.0146 against 0.03 for the cluster). |
+| 6 | The embedding base URL is configurable (`OPENAI_BASE_URL`) | The `/v1/embeddings` wire format is spoken by OpenRouter, Azure OpenAI and self-hosted vLLM. Not hypothetical: the key this was first measured with was an OpenRouter key, and one env var was the whole cost of not being locked to one vendor. |
+| 6 | Provider error bodies are scrubbed of anything key-shaped before being stored | A real 401 disproved the earlier comment claiming provider bodies "contain no secrets" — the response echoes the API key back, masked but with its real last four characters, into `ingestion_events.message` and from there the admin dashboard. A partial key is still a key (§9). |
 | 5 | The pipeline lives in `packages/rag` over interfaces; the Drizzle implementation lives in `apps/api/src/ingest` | `packages/rag` may not import `packages/db` (§4) and `packages/db` has no business knowing about ingestion, so the app is the composition root. The payoff is concrete: the whole run — including failure isolation and hash-skipping — is unit-tested in memory with no Postgres, and Step 9's `POST /ingest` constructs the same store. |
 | 5 | Errors from the Drizzle store are replaced by their `cause` message before they leave it | Drizzle's `error.message` is **the entire failed SQL statement plus its parameters**, and the pipeline writes whatever it catches into `ingestion_events.message` and `documents.error_message`, both rendered in the admin dashboard. Passing it through would print the schema and the document's contents into the UI — precisely what §7 forbids. Where there is no cause, the message is dropped rather than trusted. |
 | 5 | A year-month `doc_date` (`2025-12`) is stored as the first of the month | Postgres rejects `2025-12` for a `date` column outright, and 108 of 142 documents are dated by month. Widening the column to text would lose ordering and range queries, which is what the column is for. The precision loss is deliberate; the breadcrumb still carries the original `2025-12`, so retrieval is unaffected. |
@@ -124,9 +134,19 @@ schedule them.
 - **Step 9 / 12:** `documents.error_message` and `ingestion_events.message` may contain absolute
   server paths (an `EACCES` reports the full filesystem path). Acceptable because both are
   admin-only reads, but do not surface either on a `USER`-visible route.
-- **Step 6:** if the 78 near-duplicate delivery reports crowd out root reference documents on
-  general queries (eval `q7`), the lever is a `doc_type` prior in fusion or a search filter —
-  **not** a change to chunk size. See `docs/CORPUS.md` §5.
+- ~~**Step 6:** `doc_type` prior for the q7 crowding.~~ Tested and **refuted** — see the decision
+  table. The `docType` filter exists on the search contract and in both SQL arms regardless,
+  because it is useful on its own; it is simply not the answer to q7.
+- **Step 19:** `q7-cross-document-synthesis` is the one eval query that fails, and it is a
+  multi-intent query rather than a retrieval defect — see the decision table. The remedy is
+  query decomposition (retrieve per sub-question and fuse) or LLM reranking of the fused top
+  20, both already scoped there. **Do not** edit the query or tune fusion to make it pass.
+- **Step 7:** the retrieval score floor has a clean signal to key off. Measured over the eval
+  set: in-corpus queries top out at 0.0325–0.0328 (both arms rank the document highly), while
+  the fully off-domain q12 tops out at **0.0164** — exactly `1/(60+1)`, the signature of a
+  single arm contributing with nothing agreeing. Roughly a 2× gap, and it falls out of RRF's
+  structure rather than from a tuned threshold. Note q10/q11 top 0.0325 despite being
+  unanswerable, so the floor alone cannot catch them — that is what the prompt rule is for.
 - **Step 7 / `CLAUDE.md` §6:** the corpus attributes Merge Marina to 7 different clients across
   meeting notes. "Who is the client for Merge Marina?" has no supported answer; the conflict
   rule should surface the disagreement rather than pick one.
@@ -180,8 +200,16 @@ anything manual.
 - Embeddings default to `EMBEDDING_PROVIDER=deterministic` in `.env.example`, so the system runs
   with no API key. Set it to `openai` with `OPENAI_API_KEY` for real retrieval quality — never
   quote evaluation numbers from a deterministic run.
+- Measured with `openai/text-embedding-3-small` via OpenRouter (`OPENAI_BASE_URL`): a forced
+  re-embed of all 142 chunks takes **65s**; a search is **~450ms** end to end, of which the
+  embedding call is nearly all of it (retrieval itself is single-digit ms on 142 chunks).
+- **Eval result (real embeddings): 8/9 answerable queries.** All five shipped dataset queries
+  (q1–q5) return their expected document at **rank 1**. Only the self-authored q7 fails.
 - rag deps: gpt-tokenizer 3.4.0 (cl100k_base) · vitest 4.1.10
-- api deps: drizzle-orm 0.45.2 · zod 4.4.3 · tsx 4.23.12 (the ingest CLI runs from apps/api)
+- api deps: drizzle-orm 0.45.2 · zod 4.4.3 · tsx 4.23.12 · yaml 2.7.0 (ingest + eval CLIs)
+- `pnpm eval` runs `eval/queries.yaml` against live retrieval and exits non-zero if an
+  answerable query misses an expected document. `--k`, `--file` and `--verbose` are supported.
+  Step 16 extends this same script with recall@k, MRR and the per-arm comparison table.
 - `pnpm ingest` walks `CORPUS_DIR`; `pnpm ingest --dir <path>` overrides it, `--force` re-embeds
   everything, `--quiet` suppresses per-document warnings. Exits non-zero if any document failed.
 - Verified in Step 5 against the real corpus: clean run 142 added / 142 chunks / 1.9s; immediate

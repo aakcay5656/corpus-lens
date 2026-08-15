@@ -34,6 +34,11 @@ const ingestEnvSchema = z.object({
   // openai kind is selected without it. Demanding it unconditionally would break the
   // no-API-key path that is the whole point of the deterministic provider.
   OPENAI_API_KEY: z.string().optional(),
+
+  // The /v1/embeddings wire format is spoken by OpenRouter, Azure OpenAI and self-hosted
+  // servers too, so the vendor is a URL rather than a code change. Validated as a URL so a
+  // typo fails at startup instead of as a confusing fetch error mid-run.
+  OPENAI_BASE_URL: z.url().optional(),
 });
 
 const parsed = ingestEnvSchema.safeParse(process.env);
@@ -60,15 +65,19 @@ if (parsed.data.EMBEDDING_DIMENSIONS !== EMBEDDING_DIMENSIONS) {
 export const ingestEnv = { ...parsed.data, DATABASE_URL: databaseEnv.DATABASE_URL };
 
 /**
- * Resolves a corpus directory against the repository root.
+ * Resolves a relative path against the repository root.
  *
  * `CORPUS_DIR=./sample_dataset/corpus` in .env is written relative to the repository, but
- * this script runs from wherever pnpm or turbo puts it. Resolving against `process.cwd()`
- * would make the same .env mean different directories depending on the invocation.
+ * these scripts run from wherever pnpm or turbo puts them. Resolving against
+ * `process.cwd()` would make the same .env mean different directories depending on how the
+ * command was invoked.
  */
-export function resolveCorpusDir(dir: string): string {
-  return isAbsolute(dir) ? dir : resolve(findRepositoryRoot(), dir);
+export function resolveRepositoryPath(path: string): string {
+  return isAbsolute(path) ? path : resolve(findRepositoryRoot(), path);
 }
+
+/** Named alias, because "resolve the corpus directory" is what the CLI is actually doing. */
+export const resolveCorpusDir = resolveRepositoryPath;
 
 function findRepositoryRoot(): string {
   let current = resolve(process.cwd());
