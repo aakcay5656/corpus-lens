@@ -961,3 +961,90 @@ the real SSE framing — but I have not attached a GUI MCP client such as Claude
 config in `apps/mcp/README.md` is written from the transport's requirements rather than from
 having watched a client consume it, and connecting one is the check I would want before calling
 this done. The token's 15-minute default lifetime is the part most likely to bite there.
+
+---
+
+### Step 14 — Documentation
+
+- **AI did:** wrote `README.md` and `docs/ADR.md`, then executed the README's own setup
+  sequence against a genuinely clean clone and an empty database.
+- **I wrote/rewrote:** the limitations section, which is the part of a README most likely to be
+  quietly optimistic. Every entry there is a decision with its reasoning rather than a apology,
+  and two of them are admissions that something was *not verified* rather than that it does not
+  work — the UI has never been opened in a browser at 375px, and no GUI MCP client has ever been
+  attached. Both were tempting to leave out. They are the two claims in this repository I would
+  least want someone to discover for themselves in an interview.
+- **Got it wrong:** the README did not work. Twice, in two different ways, and neither was
+  visible from anything I had run before.
+
+  **(1) A missing `pnpm build`.** Following the setup sequence verbatim, `pnpm ingest` failed
+  with `Cannot find module .../@corpus-lens/db/dist/client.js`. The workspace packages are
+  consumed through their `exports` map, which points at `dist/` — and `dist/` does not exist on
+  a fresh checkout. `db:migrate` and `db:seed` had worked, because they run *inside*
+  `packages/db` with relative imports, so nothing before that step revealed the gap.
+
+  **(2) `pnpm dev` served a 500 on every web page.** The command the README tells a reader to
+  run. `packages/shared` emitted CommonJS only; webpack applies its React Refresh transform to a
+  workspace package's output, and that transform emits `import.meta.webpackHot`, which is a
+  parse error inside a CommonJS file. Every page importing a shared *value* — the login form's
+  Zod schema, the chat page's length limit — failed to compile.
+
+  I had built and run the web app in production mode a dozen times across Steps 10–12 and it was
+  always fine, because React Refresh is a development-only transform. The one thing I had never
+  done was request a page while `pnpm dev` was running.
+
+- **How I caught it:** by doing exactly what the plan says at this step — running the README on a
+  clean clone instead of reading it. Both failures took under a minute to surface and neither
+  was reachable from the repository I had been working in, where `dist/` had existed since Step 1
+  and where I always started the web app with `next start`.
+
+  My first fix for the second one was wrong, too: I removed `transpilePackages`, on the theory
+  that it was what pulled the package into Next's compilation. It changed nothing — a symlinked
+  workspace package resolves to a path outside `node_modules` and webpack treats it as
+  first-party either way. The actual fix is that a package consumed by both a CommonJS Node
+  process and a bundler has to ship both formats, so `packages/shared` now emits CJS and ESM
+  with an `exports` map that offers each to the right consumer.
+
+**The clean-clone run, end to end.** Cloned to a new directory, corpus copied in, `.env` from
+`.env.example`, fresh Postgres on an empty volume:
+
+```
+tracked files 188 · .env absent · sample_dataset absent · forbidden files 0
+
+pnpm install        ok
+pnpm build          ok            ← the step the README was missing
+docker compose up   0 tables before migrate
+pnpm db:migrate     Migrations applied
+pnpm db:seed        created ADMIN admin@demo.local · created USER user@demo.local
+pnpm ingest         142 discovered · 142 added · 142 chunks · 65.3s
+
+pnpm ask  (in corpus)     answered true, cited network-specs-applovin.md + the postmortem
+pnpm ask  (vacation days) answered false · MODEL_DECLINED
+pnpm eval                 8/9 answerable, q1–q5 all at rank 1
+pnpm typecheck / test     118 tests pass
+pnpm dev                  web 200 · api /docs 200 · mcp /health 200
+login with the README's demo credentials → 200, dashboard renders
+```
+
+The 8/9 reproducing on a machine that had never seen this project is the number I most wanted to
+confirm — it means the eval result is a property of the system rather than of my working
+directory.
+
+**On `docs/ADR.md`.** Twelve records, each written as decision / rejected alternative / why.
+Several of them exist because the rejected alternative was tried first and measured: the
+weighted-score fusion, the constant abstention threshold, the layout-level authorization check,
+the cookie-presence middleware. Those records are more useful than the ones where the first
+choice was right, and they are the ones I would expect to be asked about.
+
+---
+
+## Closing note
+
+Fourteen steps, each one committed separately after review. The pattern that produced most of
+the value in this log is visible across all of them and worth stating plainly: **the compiler,
+the linter and the test suite were green for every single defect recorded here.** A CommonJS
+package that broke the dev server, an authorization check that leaked the page it was guarding,
+a 404 that answered 200, an ORM error message containing the whole SQL statement, an API key
+echoed into the database, a keyword arm that silently returned nothing, a dummy hash that
+defeated the timing attack it was written to prevent — every one of them was found by running
+the thing and looking at the output, and not one of them by reading the code again.

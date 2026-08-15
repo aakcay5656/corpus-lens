@@ -1,0 +1,25 @@
+{
+  // A second, ESM emit of the same sources.
+  //
+  // `packages/shared` is consumed two ways: by CommonJS Node processes (the API, the MCP
+  // server, the CLIs) and by a bundler (Next.js). A CJS-only build breaks the second one
+  // in development — webpack applies its React Refresh transform to a workspace package's
+  // output, and that transform emits `import.meta`, which is a parse error inside a
+  // CommonJS file. Production builds were fine, because Refresh is dev-only, which is
+  // exactly why this survived until the README was executed end to end.
+  //
+  // The ESM output is consumed only by the bundler, never by Node directly, which is why
+  // extensionless relative imports are safe here.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "outDir": "dist/esm",
+    "tsBuildInfoFile": null
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
+}

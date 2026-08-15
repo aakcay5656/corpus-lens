@@ -3,9 +3,9 @@
 Single source of truth for progress. Claude Code updates this at the end of every
 step, before writing the completion report. Read it at the start of every session.
 
-**Current step:** 14 — Documentation
-**Last completed step:** 13 — MCP server
-**Last commit:** `8636ecc` · Step 13 pending
+**Current step:** all P0 steps complete — bonuses (15–19) remain
+**Last completed step:** 14 — Documentation
+**Last commit:** `85e2192` · Step 14 pending
 
 | Step | Commit |
 |---|---|
@@ -22,6 +22,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 10 — App shell and auth flow | `e8e66dd` |
 | 11 — Chat page | `c119f58` |
 | 12 — Dashboard | `8636ecc` |
+| 13 — MCP server | `85e2192` |
 
 > **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
 > the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
@@ -55,7 +56,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 11 | Chat page | P0 | ✅ done |
 | 12 | Dashboard | P0 | ✅ done |
 | 13 | MCP server | P0 | ✅ done |
-| 14 | Documentation | P0 | ⬜ |
+| 14 | Documentation | P0 | ✅ done |
 | 15 | Self-updating ingestion | P2 | ⬜ |
 | 16 | Evaluation harness | P2 | ⬜ |
 | 17 | OIDC for MCP | P2 | ⬜ |
@@ -95,6 +96,9 @@ substantial ones into `docs/ADR.md`.
 | 3 | `POST /ingest` does **not** accept a corpus directory from the client | It would let an authenticated admin walk any directory the API process can read — path traversal dressed up as a feature. The directory comes from `CORPUS_DIR` on the server. |
 | 3 | Auth responses carry no tokens in the body | Access and refresh JWTs travel in httpOnly cookies; returning them in the body hands back exactly what the cookie flag exists to withhold. |
 | 3 | `Citation` carries both `marker` and `sourceIndex` | The server drops citation markers that do not match the supplied context, after which the surviving markers are no longer contiguous. The UI has to resolve what the model actually wrote, not what it should have written. |
+| 14 | `packages/shared` emits **both** CJS and ESM | It is consumed two ways: by CommonJS Node processes and by a bundler. CJS-only broke `pnpm dev` for the web app — webpack applies its React Refresh transform to a workspace package's output and that transform emits `import.meta`, a parse error inside a CommonJS file. Production was unaffected because Refresh is dev-only, which is why it survived until the README was executed end to end. The ESM output is bundler-only and never loaded by Node, which is why extensionless relative imports are safe in it. |
+| 14 | `transpilePackages` removed from `next.config.mjs` | It was there on the theory that it saved building the packages first. That was never true — the `exports` map points at `dist/` — and it made Next treat built output as first-party source. |
+| 14 | `pnpm build` added to the documented setup sequence | Found by running the README on a clean clone: `pnpm ingest` failed with `Cannot find module .../@corpus-lens/db/dist/client.js`. The packages are consumed through `dist/`, which does not exist on a fresh checkout. |
 | 13 | The Drizzle retrieval adapter **moved** from `apps/api` to `packages/db`, and `db` now depends on `rag` | Both apps construct it, and an app may not import another app. The direction is the ports-and-adapters one: the port (`RetrievalRepository`) belongs to the domain package, the adapter to the infrastructure package, and the adapter depends on the port. `rag` still imports nothing from `db`, so retrieval stays testable with no database. This is what makes "the MCP tool is not a reimplementation" literally true rather than aspirational — **verified byte-identical results** through both front doors. |
 | 13 | The MCP server verifies JWTs itself with the **same `JWT_ACCESS_SECRET`**, and additionally looks the user up | §9: it is a second front door to the same data. Sharing the secret is what "validated against the same user store" means concretely — no second credential system to keep in sync. The database lookup is the extra: a JWT cannot be withdrawn before it expires, and an MCP client holds a token by hand for much longer than a browser does, so a deleted account should stop working immediately. The **role comes from the row, not the claim**. |
 | 13 | Authentication runs **before** the MCP handshake | An unauthenticated caller must not be able to enumerate tool names — that is information about the system it has no claim to. Verified: a garbage token gets 401 and no tool list. |
@@ -239,10 +243,19 @@ schedule them.
 
 ## Deferred / cut
 
-What was dropped and why. Everything here goes into the README's limitations section
-at Step 14.
+What was dropped and why. All of this is in the README's limitations section.
 
-- _(empty)_
+- **Query decomposition for multi-intent questions.** The one measured retrieval failure
+  (eval `q7`). Deferred to Step 19; the diagnosis is in the README and `docs/ADR.md`.
+- **Chokidar watch mode for ingestion** (Step 15). The hash-based new/changed/removed
+  classification is done and used; only the watcher and scheduler are missing.
+- **OIDC for the MCP server** (Step 17). The transport was chosen for it and the 401 already
+  returns `WWW-Authenticate`; the bearer check is one file.
+- **Live deployment** (Step 18). The README documents what it would take.
+- **Conversation history in chat.** Each question is independent; follow-ups do not work.
+- **User-management screen.** Admins create users through `POST /auth/register`.
+- **Browser verification at 375/768/1280.** Composition was checked, a real browser was not.
+- **A GUI MCP client.** The protocol was driven by hand; Claude Desktop was never attached.
 
 ---
 
