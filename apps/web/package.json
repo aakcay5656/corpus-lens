@@ -4,13 +4,24 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "next dev --port ${WEB_PORT:-3000}",
+    "build": "next build",
+    "start": "next start --port ${WEB_PORT:-3000}",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf .next"
   },
   "dependencies": {
-    "@corpus-lens/shared": "workspace:*"
+    "@corpus-lens/shared": "workspace:*",
+    "next": "^15",
+    "react": "^19",
+    "react-dom": "^19"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "postcss": "^8",
+    "tailwindcss": "^4",
     "typescript": "^5.7.2"
   }
 }

@@ -669,3 +669,71 @@ internal class name in a user-facing field, which is the same habit that leaks a
 somewhere more serious. And `abstainRate` now returns null rather than 0 when no questions have
 been asked, because "0% abstention" and "no data" are different states and a dashboard that draws
 them identically is lying about one of them.
+
+---
+
+### Step 10 — App shell and auth flow
+
+- **AI did:** installed Next 15 and Tailwind 4, wrote the token-based theme, seven UI
+  primitives, the login page and form, the app shell with role-aware navigation, the route
+  middleware, the error and not-found boundaries, and the two placeholder pages; then drove the
+  whole flow with a cookie jar as a browser stand-in.
+- **I wrote/rewrote:** the route protection, twice, and both rewrites came from evidence rather
+  than from reading the code again.
+- **Got it wrong:** two separate mistakes in the same feature, and the second is the one worth
+  remembering.
+
+  **(1) A 404 page served with HTTP 200.** A `USER` typing `/dashboard` got the not-found page —
+  correct content, wrong status. `notFound()` can only set a status while the response headers
+  are still open, and the `loading.tsx` in that route group creates a Suspense boundary: the
+  shell flushes as soon as the enclosing layout resolves, the status line is written as 200, and
+  the `notFound()` thrown later in the page arrives too late to change it.
+
+  **(2) Moving the check into a layout made it worse — it leaked the page.** The obvious fix was
+  to gate earlier, in a `dashboard/layout.tsx`. That produced a response containing *both* the
+  not-found markup and `"Corpus and analytics"` — the dashboard's own content — in the payload
+  sent to a `USER`. React receives `children` as already-constructed elements, so a layout's
+  `await` does not run *before* its children; they render alongside it. **An authorization check
+  in a layout does not prevent the page below it from executing.** Today that leaked placeholder
+  text. In Step 12 it would have leaked the document table.
+
+- **How I caught it:** the first one from `curl -w '%{http_code}'` while collecting output for
+  this report — the body said "Page not found" and the status said 200. The second from not
+  trusting the fix: I re-ran the check and grepped the *USER's* HTML for a string that should
+  only exist on the admin page. It was there. Neither would have shown up in a browser, because
+  a browser renders the not-found page and never mentions what else came down the wire.
+
+**The resulting design is better than what I started with.** Both problems disappear if the
+decision is made in middleware, before any rendering and while the status is still ours to
+choose. The middleware asks the API `/auth/me` rather than inspecting the cookie itself, which
+makes it a *verified* check — the alternative is copying the JWT signing secret into a second
+process to save one HTTP call. A `USER` reaching `/dashboard` is now redirected to `/chat`
+before a single byte of that page is rendered, and the page keeps its own `requireRole` because
+a matcher is a configuration line someone can narrow by accident.
+
+**Verified rather than asserted**, with a cookie jar standing in for a browser:
+
+```
+anonymous  /chat        307 → /login?next=%2Fchat
+anonymous  /dashboard   307 → /login?next=%2Fdashboard
+           ?next=https://evil.example → ignored, no redirect  (open-redirect guard)
+USER       /dashboard   307 → /chat   · dashboard content in payload: 0
+USER       /chat        200           · Dashboard nav link present: 0
+ADMIN      /dashboard   200           · Dashboard nav link present: 1
+signed in  /login       307 → /chat
+
+login: Access-Control-Allow-Origin: http://localhost:3000 · Allow-Credentials: true
+       cookies stored across ports (cookies ignore port, so :3000 and :3001 are one site)
+```
+
+**One thing I decided rather than defaulted.** There are no `dark:` variants anywhere in the
+app — 0 occurrences across every component. Colours are semantic tokens (`bg-surface`,
+`text-muted`) defined once for each scheme in `@theme`, and the media query swaps the values.
+Per-component `dark:` classes are how dark mode ends up correct on the pages someone looked at
+and broken on the rest, and with two more UI steps to come that seemed worth settling now rather
+than discovering later.
+
+**Deliberately still placeholders.** `/chat` and `/dashboard` render an empty state and say
+which step fills them in. The shell, the session handling, the navigation, the primitives and
+the three required view states are real; the content is Steps 11 and 12, and pretending
+otherwise in this report would be the easiest thing here to get wrong.

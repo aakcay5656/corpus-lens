@@ -3,9 +3,9 @@
 Single source of truth for progress. Claude Code updates this at the end of every
 step, before writing the completion report. Read it at the start of every session.
 
-**Current step:** 10 — App shell and auth flow
-**Last completed step:** 9 — API endpoints
-**Last commit:** `767c7b3` · Step 9 pending
+**Current step:** 11 — Chat page
+**Last completed step:** 10 — App shell and auth flow
+**Last commit:** `0f2c553` · Step 10 pending
 
 | Step | Commit |
 |---|---|
@@ -18,6 +18,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 6 — Hybrid retrieval | `1702e0b` |
 | 7 — Grounded answering | `c84e806` |
 | 8 — Auth and authorization | `767c7b3` |
+| 9 — API endpoints | `0f2c553` |
 
 > **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
 > the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
@@ -47,7 +48,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 7 | Grounded answering | P0 | ✅ done |
 | 8 | Auth and authorization | P0 | ✅ done |
 | 9 | API endpoints | P0 | ✅ done |
-| 10 | App shell and auth flow | P0 | ⬜ |
+| 10 | App shell and auth flow | P0 | ✅ done |
 | 11 | Chat page | P0 | ⬜ |
 | 12 | Dashboard | P0 | ⬜ |
 | 13 | MCP server | P0 | ⬜ |
@@ -91,6 +92,13 @@ substantial ones into `docs/ADR.md`.
 | 3 | `POST /ingest` does **not** accept a corpus directory from the client | It would let an authenticated admin walk any directory the API process can read — path traversal dressed up as a feature. The directory comes from `CORPUS_DIR` on the server. |
 | 3 | Auth responses carry no tokens in the body | Access and refresh JWTs travel in httpOnly cookies; returning them in the body hands back exactly what the cookie flag exists to withhold. |
 | 3 | `Citation` carries both `marker` and `sourceIndex` | The server drops citation markers that do not match the supplied context, after which the surviving markers are no longer contiguous. The UI has to resolve what the model actually wrote, not what it should have written. |
+| 10 | Route protection is decided in **middleware**, by asking the API `/auth/me` — not by inspecting the cookie | Two measured reasons. A check in a *layout* does not stop the page below it rendering (React builds `children` before the layout resolves), so the dashboard's markup was serialised into a `USER`'s payload. And `notFound()` cannot set a 404 once a `loading.tsx` Suspense boundary has flushed the shell — the 404 page arrived with a 200. Deciding in middleware happens before any rendering and while the status is still ours. It is also *verified* rather than guessed: the API holds the signing key, so the alternative is duplicating the secret into a second process. |
+| 10 | A non-ADMIN hitting `/dashboard` is **redirected to `/chat`**, not shown a 403 | There is nothing a `USER` can do with the knowledge that the route exists, and sending them somewhere usable beats an error page. The API still answers a direct request with a real 403. |
+| 10 | The role check is repeated in the page even though middleware already ran | The matcher is a configuration line someone can narrow by accident. It is in the *page* rather than a layout, for the rendering reason above. |
+| 10 | Theming is entirely CSS custom properties in `@theme`; **zero `dark:` variants** in any component | A `dark:` variant per component is how dark mode ends up half-implemented in the corner of a page nobody checked. Components name semantic tokens (`bg-surface`, `text-muted`) and the media query swaps the values. Verified: 0 occurrences of `dark:` across the app. |
+| 10 | Login and logout are the only browser-side API calls; everything else is server-rendered with cookies forwarded | Only the browser can receive the `Set-Cookie` that creates or ends a session. Everything after that renders on the server, so the token never reaches client JavaScript and no unauthenticated shell is painted before a client-side check redirects. |
+| 10 | `?next=` is validated in both the middleware and the login page | Not duplication: the middleware only sees requests it intercepts, and the page can be reached with a hand-written query string. Without it `?next=https://evil.example` turns login into an open redirect that hands a just-authenticated user to another site. |
+| 10 | `NEXT_PUBLIC_API_BASE_URL` is separate from `API_BASE_URL` | The Next server and the browser reach the API by different routes (and would differ entirely in a deployment). Conflating them is how a server-only hostname ends up shipped to the browser. |
 | 9 | `POST /ingest` returns **202 with a run id** and runs in the background | A full pass is ~60s against a hosted embedding model — 142 network calls — which exceeds every proxy and browser timeout between the API and the dashboard. The run row is the handle; polling `GET /ingest/runs/:id` is also what makes the dashboard's live status possible. Measured: the endpoint responds in **60ms**. |
 | 9 | `/answer` is written against the raw `Response`, not Nest's `@Sse()` | `@Sse()` takes an Observable of one event type; this needs two kinds — `token` frames as the model produces them, then one `result` frame with the validated citations. The citations cannot travel with the tokens because they only exist after the complete text has been checked against the supplied context. |
 | 9 | The chat provider availability check happens **before** SSE headers are flushed | Once a stream starts the status line is already 200 and the exception filter is powerless. Anything knowable up front — like an unconfigured chat model, which is a 503 — has to be raised while a normal error response is still possible. |
@@ -267,6 +275,13 @@ anything manual.
   re-run 142 unchanged / 0 chunks / 0.1s; `--force` 142 updated. All 142 rows INDEXED, all 142
   chunks carry both an embedding and a tsvector.
 - API: port 3001 · Web: port 3000 · MCP: port 3002
+- Web: `pnpm --filter @corpus-lens/web run build` then `run start` (or `run dev`). Requires the
+  API running — the middleware calls `/auth/me` on every navigation.
+- Routes: `/login` (public) · `/chat` (any session) · `/dashboard` (ADMIN). `/` redirects to
+  `/chat`. Verified: anonymous → 307 to `/login?next=…`; USER on `/dashboard` → 307 to `/chat`
+  with **zero** dashboard content in the payload; ADMIN → 200.
+- Cookies work across ports because cookies ignore port; `localhost:3000` and `localhost:3001`
+  are the same site, so `SameSite=Lax` permits the login POST.
 - `pnpm --filter @corpus-lens/api run build && pnpm --filter @corpus-lens/api run start` runs the
   API. **Do not run `src/main.ts` with tsx** — see the decision table; it 500s on every route.
 - Endpoints: `POST /search` and `POST /answer` (any authenticated role) · `GET /documents`,
