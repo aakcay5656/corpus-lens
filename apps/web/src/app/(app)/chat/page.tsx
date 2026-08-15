@@ -1,14 +1,15 @@
 import { type Metadata } from "next";
 
-import { Card, CardBody, CardHeader } from "@/components/ui/card";
-import { EmptyState } from "@/components/ui/states";
+import { ChatPanel } from "./chat-panel";
 
 export const metadata: Metadata = { title: "Chat · corpus-lens" };
 
 /**
- * Placeholder. Step 11 replaces this with the question input, the streamed answer and the
- * citation chips; the shell, the session and the navigation around it are Step 10's work
- * and are already real.
+ * A Server Component wrapping one client island.
+ *
+ * The page itself needs no data — the session is already resolved by the layout and the
+ * middleware — so everything above `ChatPanel` stays server-rendered and only the part
+ * that genuinely needs interaction and a streaming connection ships JavaScript.
  */
 export default function ChatPage() {
   return (
@@ -17,18 +18,11 @@ export default function ChatPage() {
         <h1 className="text-lg font-semibold text-ink">Ask the corpus</h1>
         <p className="mt-1 text-sm text-muted">
           Answers are built only from the indexed documents and cite the passages they came from.
+          When the corpus does not cover a question, the answer says so instead of guessing.
         </p>
       </div>
 
-      <Card>
-        <CardHeader title="Chat" description="Arrives in the next step" />
-        <CardBody className="p-0">
-          <EmptyState
-            title="Nothing asked yet"
-            description="The question input and streamed answers land here in Step 11."
-          />
-        </CardBody>
-      </Card>
+      <ChatPanel />
     </div>
   );
 }

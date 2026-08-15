@@ -737,3 +737,71 @@ than discovering later.
 which step fills them in. The shell, the session handling, the navigation, the primitives and
 the three required view states are real; the content is Steps 11 and 12, and pretending
 otherwise in this report would be the easiest thing here to get wrong.
+
+---
+
+### Step 11 — Chat page
+
+- **AI did:** wrote the SSE client, the citation-chip renderer, the source card, the chat panel
+  with its four states, and the page around them; then drove the whole thing against a running
+  API with both an answerable and an unanswerable question.
+- **I wrote/rewrote:** the abstention rendering. The first version showed the refusal in the
+  same error component as a failed request, which is wrong in a way that matters for this
+  product specifically: a failed request means the system is broken, and an abstention means the
+  system worked and the corpus has a gap. They now look different on purpose — abstention is
+  warning-toned rather than red, the two `abstainReason` values get different explanations
+  ("nothing scored highly enough to be worth asking the model" versus "the model read the
+  passages and declined"), and the retrieved passages are still shown underneath so the refusal
+  can be audited rather than taken on trust.
+- **Got it wrong:** nothing that reached a running page this step — which is itself worth a
+  sentence, because the two things most likely to have gone wrong had both already been caught
+  and written down as parking-lot items in earlier steps, and I built against those notes rather
+  than rediscovering them.
+
+**The citation bug that did not happen.** Step 7's report recorded that a real answer had cited
+`[1][2][6]` — markers are not contiguous, because the model cites only the sources it used and
+the server drops any that point at a source it was never given. The obvious implementation
+renders the nth citation as linking to the nth source. Both live questions this step happened to
+produce contiguous markers, so I checked the skip case deterministically instead of hoping for
+it:
+
+```
+markers written by the model: [1][2][6]
+  chip [1]  resolved->applovin.md        nth-citation->applovin.md        same
+  chip [2]  resolved->postmortem.md      nth-citation->postmortem.md      same
+  chip [6]  resolved->build-pipeline.md  nth-citation->unity-meta.md      NAIVE WOULD BE WRONG
+```
+
+The third chip would have scrolled to the wrong document. That is the worst class of bug in this
+feature: a citation exists so a reader can check a claim, and one that silently points somewhere
+else breaks that while still looking correct.
+
+**Two rules carried over rather than relearned.** The client's SSE reader holds a trailing
+partial frame between network chunks — the same rule the server's provider parser needed, for
+the same reason, and the same one that works perfectly on localhost and drops tokens under real
+latency. And a new question aborts the in-flight stream, because two overlapping streams append
+into the same state and interleave.
+
+**Verified against a running system:**
+
+```
+in-corpus question   8 token frames, then result
+                     markers [1,2] · citation.marker [1,2] · sourceIndex [0,1]
+                     [1] -> sources[0] sdk-notes-v3.md  OK
+                     [2] -> sources[1] sdk-notes-v2.md  OK
+
+unanswerable         0 token frames · "NO_ANSWER" appears nowhere in the stream
+                     answered false · MODEL_DECLINED · 6 passages still returned
+
+off-domain           answered false · NO_RELEVANT_CONTEXT · generateMs null (model not called)
+```
+
+The middle line is the Step 7 parking-lot item closing: the sentinel guard added in Step 9 lives
+in `packages/rag`, so the browser never sees the token even though it streams everything else.
+
+**On the "phone-width" criterion.** I verified the layout the way I could without a browser —
+the composition is flex-wrap throughout, there are no fixed pixel widths anywhere in the page,
+controls are 44px tall, the header sheds the email below `sm`, and the source cards truncate
+long titles rather than overflowing. What I have *not* done is look at it at 375px in a real
+browser, and the plan asks for that explicitly. It is the one claim in this report I would want
+to check myself before believing.

@@ -3,9 +3,9 @@
 Single source of truth for progress. Claude Code updates this at the end of every
 step, before writing the completion report. Read it at the start of every session.
 
-**Current step:** 11 — Chat page
-**Last completed step:** 10 — App shell and auth flow
-**Last commit:** `0f2c553` · Step 10 pending
+**Current step:** 12 — Dashboard
+**Last completed step:** 11 — Chat page
+**Last commit:** `e8e66dd` · Step 11 pending
 
 | Step | Commit |
 |---|---|
@@ -19,6 +19,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 7 — Grounded answering | `c84e806` |
 | 8 — Auth and authorization | `767c7b3` |
 | 9 — API endpoints | `0f2c553` |
+| 10 — App shell and auth flow | `e8e66dd` |
 
 > **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
 > the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
@@ -49,7 +50,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 8 | Auth and authorization | P0 | ✅ done |
 | 9 | API endpoints | P0 | ✅ done |
 | 10 | App shell and auth flow | P0 | ✅ done |
-| 11 | Chat page | P0 | ⬜ |
+| 11 | Chat page | P0 | ✅ done |
 | 12 | Dashboard | P0 | ⬜ |
 | 13 | MCP server | P0 | ⬜ |
 | 14 | Documentation | P0 | ⬜ |
@@ -92,6 +93,13 @@ substantial ones into `docs/ADR.md`.
 | 3 | `POST /ingest` does **not** accept a corpus directory from the client | It would let an authenticated admin walk any directory the API process can read — path traversal dressed up as a feature. The directory comes from `CORPUS_DIR` on the server. |
 | 3 | Auth responses carry no tokens in the body | Access and refresh JWTs travel in httpOnly cookies; returning them in the body hands back exactly what the cookie flag exists to withhold. |
 | 3 | `Citation` carries both `marker` and `sourceIndex` | The server drops citation markers that do not match the supplied context, after which the surviving markers are no longer contiguous. The UI has to resolve what the model actually wrote, not what it should have written. |
+| 11 | A citation chip resolves `marker` → `citation.sourceIndex`, never "nth citation is nth source" | The Step 7 parking-lot item, and the naive version is silently wrong rather than broken. Demonstrated with the real `[1][2][6]` case: the third chip would scroll to `unity-meta.md` instead of `build-pipeline.md`. A citation exists so a claim can be checked; one pointing at the wrong passage breaks that while still looking right. |
+| 11 | The SSE reader holds a trailing partial frame between network chunks | Same rule as the server's provider parser, for the same reason: a chunk boundary lands mid-JSON routinely, and a parser assuming whole frames works on localhost and drops tokens the moment there is real latency. |
+| 11 | `fetch` + `ReadableStream`, not `EventSource` | `EventSource` only issues GET and cannot send a body or credentials, and the question has to be POSTed. |
+| 11 | A new question **aborts** the in-flight stream | Two overlapping streams append tokens into the same state and produce interleaved nonsense. An abort is also distinguished from a failure, so cancelling does not render an error. |
+| 11 | Abstention renders as its own state — warning-toned, not an error | The system working correctly and the corpus lacking an answer are the same event. `answered` is a boolean on the wire precisely so this branch can exist, and the two `abstainReason` values get different explanations because "nothing scored highly enough" and "the model read them and declined" are different facts about the corpus. |
+| 11 | Retrieved passages are shown even when the answer abstains | The user asked a question and got nothing; showing what *was* found is what makes the refusal auditable rather than opaque. |
+| 11 | Cited passages are marked distinctly from merely-retrieved ones | Six sources go to the model and typically two are used. Rendering them identically implies the answer rests on all six. |
 | 10 | Route protection is decided in **middleware**, by asking the API `/auth/me` — not by inspecting the cookie | Two measured reasons. A check in a *layout* does not stop the page below it rendering (React builds `children` before the layout resolves), so the dashboard's markup was serialised into a `USER`'s payload. And `notFound()` cannot set a 404 once a `loading.tsx` Suspense boundary has flushed the shell — the 404 page arrived with a 200. Deciding in middleware happens before any rendering and while the status is still ours. It is also *verified* rather than guessed: the API holds the signing key, so the alternative is duplicating the secret into a second process. |
 | 10 | A non-ADMIN hitting `/dashboard` is **redirected to `/chat`**, not shown a 403 | There is nothing a `USER` can do with the knowledge that the route exists, and sending them somewhere usable beats an error page. The API still answers a direct request with a real 403. |
 | 10 | The role check is repeated in the page even though middleware already ran | The matcher is a configuration line someone can narrow by accident. It is in the *page* rather than a layout, for the rendering reason above. |
@@ -189,8 +197,11 @@ schedule them.
 - ~~**Step 8:** `normalizeEmail()` on register and login; import argon2 params from
   `packages/db/src/password.ts`.~~ Both done, and both covered — there is a test that logging in
   with an upper-cased email succeeds.
-- **Step 11 (and Step 9's SSE):** streamed tokens must not be rendered until abstention is
-  resolved. When the model declines it emits the raw `NO_ANSWER` sentinel, and the `pnpm ask`
+- ~~**Step 11:** streamed tokens must not render the sentinel; resolve markers to
+  `sourceIndex`.~~ Both done. The sentinel guard was solved server-side in Step 9 (verified: 0
+  token frames on an abstention); the marker resolution is in `answer-text.tsx`.
+- _(historical)_ **Step 11 (and Step 9's SSE):** streamed tokens must not be rendered until
+  abstention is resolved. When the model declines it emits the raw `NO_ANSWER` sentinel, and the `pnpm ask`
   CLI prints it verbatim (`streaming: NO_ANSWER`) before the abstention state is decided. In a
   terminal that is cosmetic; in the chat page the user would watch "NO_ANSWER" type itself out
   and then be replaced. Buffer the first tokens, or suppress rendering until the response is
@@ -277,6 +288,10 @@ anything manual.
 - API: port 3001 · Web: port 3000 · MCP: port 3002
 - Web: `pnpm --filter @corpus-lens/web run build` then `run start` (or `run dev`). Requires the
   API running — the middleware calls `/auth/me` on every navigation.
+- `/chat` is live: streamed answer, interactive citation chips that scroll to and highlight the
+  matching passage, retrieved passages with breadcrumb + fused score + per-arm ranks, distinct
+  abstention state, latency split, Enter-to-send. Verified against both an answerable and an
+  unanswerable question.
 - Routes: `/login` (public) · `/chat` (any session) · `/dashboard` (ADMIN). `/` redirects to
   `/chat`. Verified: anonymous → 307 to `/login?next=…`; USER on `/dashboard` → 307 to `/chat`
   with **zero** dashboard content in the payload; ADMIN → 200.
