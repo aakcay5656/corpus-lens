@@ -505,3 +505,88 @@ from sources 1, 2, 3, 5 and 6, because their bodies are drawn from the same fift
 the model cites the sources it used rather than the first three it was given. That is exactly why
 `Citation` carries both `marker` and `sourceIndex` (Step 3), and it is a note for Step 11: the
 chat page must resolve markers, never assume the nth citation is the nth source.
+
+---
+
+### Step 8 — Auth and authorization
+
+- **AI did:** wrote the refresh-token table and migration, the Nest bootstrap and module graph,
+  the token service, both guards and their decorators, the cookie helpers, the auth service and
+  controller, the exception filter, the request-id middleware and the Zod validation pipe, plus
+  22 end-to-end tests; then walked the whole flow over real HTTP with curl.
+- **I wrote/rewrote:** two things.
+
+  The **dummy password hash**. The first version was a hard-coded argon2 string, used to make a
+  failed login take the same time whether or not the account exists. It was fabricated — a
+  plausible-looking encoding that was not a real hash. `verifyPassword` rejects a malformed hash
+  in microseconds instead of the ~50ms a real verification takes, so the constant would have
+  produced exactly the timing difference it was written to remove, while looking like it worked.
+  It is now computed once at startup from random bytes, which cannot be got wrong.
+
+  The **direction of the guard default**. The first draft applied `@UseGuards` per controller.
+  That satisfies "authorization on every route" only for as long as nobody forgets, and Step 9
+  adds five endpoints where forgetting would be silent. Both guards are now global and routes
+  opt *out* with `@Public()`, so a forgotten decorator produces a locked door rather than an
+  open one.
+
+- **Got it wrong:** the entire API answered 500 on every route while 22 tests passed.
+
+  NestJS resolves constructor injection from `emitDecoratorMetadata`. **esbuild does not
+  implement it**, and `tsx` — which I had used for the other CLIs in this app — is esbuild. So
+  every injected dependency arrived as `undefined`, the first guard threw on
+  `this.reflector.getAllAndOverride`, and the exception filter dutifully turned it into a clean
+  `{"error":{"code":"INTERNAL"}}` for every single request, including login.
+
+  The reason the tests did not catch it is the part worth keeping: vitest transforms with SWC,
+  which *does* emit decorator metadata. **The test harness was more capable than the runtime.**
+  A green suite proved the code was correct under a compiler the server was never going to use.
+
+- **How I caught it:** by running the thing. The tests were green, so I started the server and
+  ran the flow with curl to have output for the report, and the first request came back 500. The
+  exception filter had already logged the real cause with a stack — which is the first time the
+  "log the truth, return a request id" split earned its keep.
+
+The fix is to compile the server with `tsc` and run it with `node`, leaving `tsx` for the CLIs,
+which have no decorators. Then the linter demanded the opposite mistake: `consistent-type-imports`
+flagged eight imports as type-only, and obeying it would have deleted the very runtime references
+`emitDecoratorMetadata` needs — reintroducing undefined dependencies with no compiler error. The
+rule is switched off for `apps/api` with that reason written down, because the next person to see
+those errors will otherwise "fix" them.
+
+**Design decisions worth defending in an interview:**
+
+*Refresh tokens are stored, hashed, rather than being self-contained JWTs.* A stateless refresh
+token can be rotated but never revoked, and — more importantly — reuse cannot be **detected**: a
+stolen token and the legitimate one are indistinguishable. With a table, presenting an
+already-rotated token means one of the two holders is an attacker, and since there is no way to
+tell which, the whole family is revoked and both must log in again. Failing loudly for the honest
+user is the right trade against leaving an attacker with a live session.
+
+*SHA-256 for refresh tokens, argon2id for passwords.* Opposite choices because the inputs are
+opposite. Argon2's cost exists to make guessing a human-chosen secret expensive; a refresh token
+is 256 bits from the CSPRNG, so there is nothing to guess and a slow hash would only add latency
+to every refresh.
+
+*The two JWT secrets must differ, checked at startup.* Both tokens are JWTs signed by this
+server, and the only thing stopping a refresh token being replayed as an access token is the key
+it verifies under. There is a test that a token signed with the refresh secret — forged to claim
+ADMIN — is rejected.
+
+**Verified over HTTP, not only in tests:**
+
+```
+GET  /auth/me                       401  UNAUTHORIZED
+POST /auth/login (admin)            200  no token in the body
+     Set-Cookie: cl_access=…   Path=/;             HttpOnly; SameSite=Lax
+     Set-Cookie: cl_refresh=…  Path=/auth/refresh; HttpOnly; SameSite=Lax
+POST /auth/register  as USER        403  FORBIDDEN
+POST /auth/register  as ADMIN       201
+POST /auth/refresh   rotate         200
+POST /auth/refresh   replay spent   401  → family revoked
+POST /auth/refresh   successor      401  (proves the revocation cascaded)
+Authorization: Bearer not.a.jwt     401
+```
+
+The refresh cookie's `Path=/auth/refresh` is visible in that output and is deliberate: the
+long-lived credential is not attached to every ordinary API call, only to the one route that
+consumes it.

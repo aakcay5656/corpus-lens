@@ -4,6 +4,7 @@ import { chunks } from "./schema/chunks";
 import { documents } from "./schema/documents";
 import { ingestionEvents } from "./schema/ingestion-events";
 import { ingestionRuns } from "./schema/ingestion-runs";
+import { refreshTokens } from "./schema/refresh-tokens";
 import { searchQueries } from "./schema/search-queries";
 import { users } from "./schema/users";
 
@@ -19,6 +20,7 @@ export const schema = {
   ingestionRuns,
   ingestionEvents,
   searchQueries,
+  refreshTokens,
 };
 
 export type Schema = typeof schema;

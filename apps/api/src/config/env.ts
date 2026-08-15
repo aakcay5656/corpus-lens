@@ -47,6 +47,40 @@ const ingestEnvSchema = z.object({
   CHAT_MODEL: z.string().min(1).default(DEFAULT_CHAT_MODEL),
   CHAT_BASE_URL: z.url().optional(),
   CHAT_API_KEY: z.string().optional(),
+
+  // ---------------------------------------------------------------------------
+  // Auth — Step 8
+  // ---------------------------------------------------------------------------
+  // No defaults, deliberately. Every other setting here has a sensible fallback; a
+  // signing secret must not, because a default secret is a published secret and every
+  // deployment that forgot to set one would share it. 32 characters is the floor for a
+  // key that has to resist offline brute force.
+  JWT_ACCESS_SECRET: z
+    .string()
+    .min(32, "must be at least 32 characters — generate with: openssl rand -base64 48"),
+  JWT_REFRESH_SECRET: z
+    .string()
+    .min(32, "must be at least 32 characters — generate with: openssl rand -base64 48"),
+
+  // Short-lived, because an access token cannot be revoked before it expires: its whole
+  // point is that verifying it needs no database round trip. The refresh token is the
+  // revocable half, and it is stored server-side (packages/db/schema/refresh-tokens).
+  ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
+  REFRESH_TOKEN_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(60 * 60 * 24 * 7),
+
+  // Cookies are Secure in production and not in development, because a browser refuses a
+  // Secure cookie over plain http and localhost is plain http.
+  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+
+  // The browser origin allowed to send credentialed requests. A single origin, never "*":
+  // the two are incompatible for credentialed CORS, and a wildcard here would let any
+  // site read authenticated responses.
+  WEB_ORIGIN: z.url().default("http://localhost:3000"),
+  API_PORT: z.coerce.number().int().positive().default(3001),
 });
 
 const parsed = ingestEnvSchema.safeParse(process.env);
@@ -60,6 +94,13 @@ if (!parsed.success) {
   throw new Error(`Invalid ingestion environment:\n${issues}`);
 }
 
+if (parsed.data.JWT_ACCESS_SECRET === parsed.data.JWT_REFRESH_SECRET) {
+  // Distinct secrets are what stop a refresh token from being presented as an access
+  // token: both are JWTs signed by this server, and the only thing making them
+  // non-interchangeable is the key each is verified against.
+  throw new Error("JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different values.");
+}
+
 if (parsed.data.EMBEDDING_DIMENSIONS !== EMBEDDING_DIMENSIONS) {
   // The parking-lot check from Step 4. packages/rag cannot import packages/db, so this is
   // the only place both numbers are in scope. Without it a mismatch surfaces as an opaque
@@ -70,7 +111,7 @@ if (parsed.data.EMBEDDING_DIMENSIONS !== EMBEDDING_DIMENSIONS) {
   );
 }
 
-export const ingestEnv = {
+export const apiEnv = {
   ...parsed.data,
   DATABASE_URL: databaseEnv.DATABASE_URL,
 
@@ -108,3 +149,8 @@ function findRepositoryRoot(): string {
     current = parent;
   }
 }
+
+/**
+ * The former name, kept so the ingest, eval and ask CLIs read naturally. Same object.
+ */
+export const ingestEnv = apiEnv;

@@ -8,19 +8,38 @@
     "ingest": "tsx src/ingest/cli.ts",
     "clean": "rm -rf dist",
     "eval": "tsx src/eval/run.ts",
-    "ask": "tsx src/ask/cli.ts"
+    "ask": "tsx src/ask/cli.ts",
+    "dev": "tsc --watch --preserveWatchOutput & node --watch dist/main.js",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "build": "rm -rf dist && tsc"
   },
   "dependencies": {
     "@corpus-lens/db": "workspace:*",
     "@corpus-lens/rag": "workspace:*",
     "@corpus-lens/shared": "workspace:*",
+    "@nestjs/common": "^11",
+    "@nestjs/core": "^11",
+    "@nestjs/jwt": "^11",
+    "@nestjs/platform-express": "^11",
+    "cookie-parser": "^1.4",
     "drizzle-orm": "^0.45.2",
+    "reflect-metadata": "^0.2",
+    "rxjs": "^7",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@nestjs/testing": "^11",
+    "@swc/core": "^1.10",
+    "@types/cookie-parser": "^1.4",
+    "@types/express": "^5",
     "@types/node": "^22.10.5",
+    "@types/supertest": "^6",
+    "supertest": "^7",
     "tsx": "^4.23.12",
     "typescript": "^5.7.2",
+    "unplugin-swc": "^1.5",
+    "vitest": "^4.1.10",
     "yaml": "^2.7.0"
   }
 }

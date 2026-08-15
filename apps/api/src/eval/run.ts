@@ -7,7 +7,7 @@ import { retrieve } from "@corpus-lens/rag/retriever";
 import { createTokenCounter } from "@corpus-lens/rag/tokenizer";
 import { parse as parseYaml } from "yaml";
 
-import { ingestEnv, resolveRepositoryPath } from "../ingest/env";
+import { ingestEnv, resolveRepositoryPath } from "../config/env";
 import { createDrizzleRetrievalRepository } from "../retrieval/drizzle-retrieval-repository";
 
 /**

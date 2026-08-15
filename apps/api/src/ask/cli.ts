@@ -7,7 +7,7 @@ import { createEmbeddingProvider } from "@corpus-lens/rag/embedding-provider-fac
 import { createTokenCounter } from "@corpus-lens/rag/tokenizer";
 import { TOP_K_DEFAULT, TOP_K_MAX, TOP_K_MIN } from "@corpus-lens/shared/limits";
 
-import { ingestEnv } from "../ingest/env";
+import { ingestEnv } from "../config/env";
 import { createDrizzleRetrievalRepository } from "../retrieval/drizzle-retrieval-repository";
 
 /**

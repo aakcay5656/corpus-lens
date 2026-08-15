@@ -12,7 +12,7 @@ import {
 import { createTokenCounter } from "@corpus-lens/rag/tokenizer";
 
 import { createDrizzleIngestionStore } from "./drizzle-ingestion-store";
-import { ingestEnv, resolveCorpusDir } from "./env";
+import { ingestEnv, resolveCorpusDir } from "../config/env";
 
 /**
  * `pnpm ingest [--dir <path>] [--force] [--quiet]`

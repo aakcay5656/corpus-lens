@@ -3,9 +3,9 @@
 Single source of truth for progress. Claude Code updates this at the end of every
 step, before writing the completion report. Read it at the start of every session.
 
-**Current step:** 8 — Auth and authorization
-**Last completed step:** 7 — Grounded answering
-**Last commit:** `1702e0b` · Step 7 pending
+**Current step:** 9 — API endpoints
+**Last completed step:** 8 — Auth and authorization
+**Last commit:** `c84e806` · Step 8 pending
 
 | Step | Commit |
 |---|---|
@@ -16,6 +16,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 4 — Chunking + embeddings | `7d7ee00` |
 | 5 — Ingestion pipeline | `1769e43` |
 | 6 — Hybrid retrieval | `1702e0b` |
+| 7 — Grounded answering | `c84e806` |
 
 > **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
 > the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
@@ -43,7 +44,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 5 | Ingestion pipeline | P0 | ✅ done |
 | 6 | Hybrid retrieval | P0 | ✅ done |
 | 7 | Grounded answering | P0 | ✅ done |
-| 8 | Auth and authorization | P0 | ⬜ |
+| 8 | Auth and authorization | P0 | ✅ done |
 | 9 | API endpoints | P0 | ⬜ |
 | 10 | App shell and auth flow | P0 | ⬜ |
 | 11 | Chat page | P0 | ⬜ |
@@ -89,6 +90,14 @@ substantial ones into `docs/ADR.md`.
 | 3 | `POST /ingest` does **not** accept a corpus directory from the client | It would let an authenticated admin walk any directory the API process can read — path traversal dressed up as a feature. The directory comes from `CORPUS_DIR` on the server. |
 | 3 | Auth responses carry no tokens in the body | Access and refresh JWTs travel in httpOnly cookies; returning them in the body hands back exactly what the cookie flag exists to withhold. |
 | 3 | `Citation` carries both `marker` and `sourceIndex` | The server drops citation markers that do not match the supplied context, after which the surviving markers are no longer contiguous. The UI has to resolve what the model actually wrote, not what it should have written. |
+| 8 | Both guards are registered **globally**; routes opt out with `@Public()` rather than in with `@Auth()` | §9 requires authorization on every route. Per-controller `@UseGuards` satisfies that only until someone forgets, and Step 9's endpoints are exactly where forgetting is easy and invisible. This way a new route is authenticated by default and exposing one takes a deliberate decorator — the failure mode of forgetting is a locked door, not an open one. |
+| 8 | The API server is compiled with `tsc` and run with `node`; only the CLIs use `tsx` | **esbuild does not implement `emitDecoratorMetadata`.** Under `tsx` every Nest constructor injection resolves to `undefined` and all routes answer 500. Invisible from the test suite, because vitest transforms with SWC, which *does* emit it — 22 green tests coexisted with a completely broken server. |
+| 8 | `@typescript-eslint/consistent-type-imports` is disabled for `apps/api` | Same root cause from the other direction: `import type` deletes the runtime reference `emitDecoratorMetadata` needs, so obeying the rule would reintroduce undefined dependencies. The compiler cannot see the problem, so the rule is switched off for the app rather than suppressed import by import. |
+| 8 | Refresh tokens are **stored** (hashed) in a table, not self-contained JWTs | A stateless refresh token can be rotated but never revoked, and reuse cannot be *detected* — a stolen token and the legitimate one are indistinguishable. The table is what allows the standard rule: presenting an already-rotated token revokes the entire family, since there is no way to tell which holder is the attacker. |
+| 8 | Refresh tokens are hashed with SHA-256, passwords with argon2id | Opposite choices for opposite inputs. Argon2's cost exists to make guessing a *human-chosen* secret expensive; a refresh token is 256 bits from the CSPRNG, so there is nothing to guess and a deliberately slow hash would only add latency to every refresh. |
+| 8 | The two JWT secrets must differ, enforced at startup | Both tokens are JWTs signed by this server; the only thing preventing a refresh token being replayed as an access token is the key it verifies under. There is a test that a token signed with the refresh secret — claiming ADMIN — is rejected. |
+| 8 | Login verifies a password even when the email is unknown, against a hash computed at startup | Skipping the ~50ms argon2 verification for an unknown address makes the response measurably faster and turns login into an account-enumeration oracle. The dummy hash is *computed*, not a literal: `verifyPassword` rejects a malformed hash in microseconds, which would defeat the whole point. |
+| 8 | The exception filter never uses an unrecognised exception's message | Only `HttpException` — errors this code raised deliberately — speaks to the client. Step 5 proved an ORM message can be an entire SQL statement and Step 6 proved a provider body can echo an API key; there is no way to know what an arbitrary `Error.message` holds, so it goes to the log and the client gets a request id. |
 | 7 | The abstention **score floor is derived, not tuned**: `1/(k+1) + 1/(k+candidates)` = 0.0289 | It is the score of a chunk ranked first by one arm and last-of-candidates by the other, so the floor asserts exactly one thing — at least one chunk was found by *both* retrieval arms. Measured: in-corpus questions score 0.0306–0.0328, the fully off-domain one scores 0.0164 (= `1/(k+1)`, one arm alone). No number was picked to make that separation happen. |
 | 7 | Abstention is detected by a **sentinel token**, not by reading the prose | Searching an answer for apologetic phrasing is exactly the string-matching the `answered` boolean exists to replace, and it breaks the moment the model rephrases or replies in another language. The sentinel is compared against the whole response, so a model *discussing* the rule is not mistaken for one obeying it. |
 | 7 | Generation uses the OpenAI `/v1/chat/completions` wire format, **not** the official Anthropic SDK — deviates from `CLAUDE.md` §3 | The model is still Claude (`anthropic/claude-sonnet-5`). The credential available is an OpenRouter key, which does not expose Anthropic's `/v1/messages`; Step 6 already built this seam for embeddings, so one wire format means one streaming parser and one retry policy to defend instead of two; and the `ChatProvider` interface §3 actually asks for is unchanged, so an SDK-backed implementation is one file and one factory branch. |
@@ -160,11 +169,23 @@ schedule them.
 - **Step 7 / `CLAUDE.md` §6:** the corpus attributes Merge Marina to 7 different clients across
   meeting notes. "Who is the client for Merge Marina?" has no supported answer; the conflict
   rule should surface the disagreement rather than pick one.
-- **Step 8:** auth must call `normalizeEmail()` from `@corpus-lens/db/normalize-email` on both
-  register and login. The unique constraint is on the raw column, so normalisation is the only
-  thing keeping `Admin@demo.local` and `admin@demo.local` one account.
-- **Step 8:** `packages/db/src/password.ts` already owns the argon2id parameters. Auth imports
-  it rather than re-declaring them, or the seed and the login path can drift apart.
+- ~~**Step 8:** `normalizeEmail()` on register and login; import argon2 params from
+  `packages/db/src/password.ts`.~~ Both done, and both covered — there is a test that logging in
+  with an upper-cased email succeeds.
+- **Step 11 (and Step 9's SSE):** streamed tokens must not be rendered until abstention is
+  resolved. When the model declines it emits the raw `NO_ANSWER` sentinel, and the `pnpm ask`
+  CLI prints it verbatim (`streaming: NO_ANSWER`) before the abstention state is decided. In a
+  terminal that is cosmetic; in the chat page the user would watch "NO_ANSWER" type itself out
+  and then be replaced. Buffer the first tokens, or suppress rendering until the response is
+  known not to be the sentinel.
+- **Step 9:** rate limiting is still outstanding (`CLAUDE.md` §9 requires it on search and
+  answer). Not added in Step 8 because there was no route worth limiting yet.
+- **Step 9:** `POST /ingest` must not run the pipeline inline — see the note above — and every
+  new endpoint needs `@Roles("ADMIN")` where §9 says admin-only. The guards are global, so the
+  default is authenticated-but-any-role; admin-only is still an explicit decision per route.
+- **Step 14:** expired refresh tokens are never deleted. Harmless (they are rejected on expiry)
+  but the table grows forever. A cleanup query or a `DELETE ... WHERE expires_at < now()` on
+  startup belongs in the README's limitations if it is not implemented.
 
 ---
 
@@ -232,3 +253,10 @@ anything manual.
   re-run 142 unchanged / 0 chunks / 0.1s; `--force` 142 updated. All 142 rows INDEXED, all 142
   chunks carry both an embedding and a tsvector.
 - API: port 3001 · Web: port 3000 · MCP: port 3002
+- `pnpm --filter @corpus-lens/api run build && pnpm --filter @corpus-lens/api run start` runs the
+  API. **Do not run `src/main.ts` with tsx** — see the decision table; it 500s on every route.
+- Auth routes: `POST /auth/{login,refresh,logout}` are public, `POST /auth/register` is
+  ADMIN-only, `GET /auth/me` needs any valid token. Cookies are `cl_access` (path `/`) and
+  `cl_refresh` (path `/auth/refresh`), both HttpOnly + SameSite=Lax, Secure in production.
+- `.env` now needs `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` (≥32 chars, must differ).
+  Real random values were generated into the local `.env`; `.env.example` carries placeholders.

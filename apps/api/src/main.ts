@@ -1,31 +1,43 @@
-import { schema } from "@corpus-lens/db/client";
-import { DEFAULT_CHUNK_OPTIONS } from "@corpus-lens/rag/chunker";
-import { TOP_K_DEFAULT, TOP_K_MAX } from "@corpus-lens/shared/limits";
-import { type Role } from "@corpus-lens/shared/role";
-import { searchRequestSchema } from "@corpus-lens/shared/search";
+import "reflect-metadata";
 
 /**
- * Scaffold placeholder. NestJS is installed in Step 8 together with the auth module, so
- * that every dependency arrives in the step whose code justifies it.
+ * This entry point is compiled by `tsc` and run with plain `node` — deliberately, and not
+ * with `tsx` like the CLIs in this app.
  *
- * What this file demonstrates today is the contract boundary: the same Zod schema the
- * browser derives its types from is what the API will validate requests with, and the
- * bounds it enforces are the constants, not numbers retyped in a controller.
+ * NestJS resolves constructor injection from `emitDecoratorMetadata`, and esbuild, which
+ * is what `tsx` uses, does not implement it. Under tsx every injected dependency arrives
+ * as `undefined` and the first guard throws, so *every* route answers 500. The CLIs are
+ * unaffected because they are plain functions with no decorators.
+ *
+ * Worth stating because the failure is invisible from the test suite: vitest transforms
+ * with SWC, which does emit the metadata, so the tests pass against a runtime the server
+ * does not have.
  */
-function main(): void {
-  const adminRole: Role = "ADMIN";
 
-  // The schema is the runtime validator. An over-large topK is rejected here rather than
-  // reaching the embedding provider (CLAUDE.md §9).
-  const rejected = searchRequestSchema.safeParse({ query: "hello", topK: TOP_K_MAX + 1 });
+import { Logger } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+import cookieParser from "cookie-parser";
 
-  console.log(
-    `api scaffold — chunk budget ${DEFAULT_CHUNK_OPTIONS.budgetTokens} tokens, ` +
-      `overlap ${DEFAULT_CHUNK_OPTIONS.overlapTokens}`,
-  );
-  console.log(`tables visible from the db package: ${Object.keys(schema).join(", ")}`);
-  console.log(`roles: ${adminRole}, default topK ${TOP_K_DEFAULT}, max ${TOP_K_MAX}`);
-  console.log(`topK ${TOP_K_MAX + 1} accepted? ${rejected.success}`);
+import { AppModule } from "./app.module";
+import { apiEnv } from "./config/env";
+
+async function bootstrap(): Promise<void> {
+  const app = await NestFactory.create(AppModule, { bodyParser: true });
+
+  // Required for the httpOnly auth cookies to be readable at all.
+  app.use(cookieParser());
+
+  // A single named origin with credentials enabled. Never "*": the two are incompatible
+  // for credentialed CORS by specification, and a wildcard would let any site read an
+  // authenticated response (CLAUDE.md §9).
+  app.enableCors({ origin: apiEnv.WEB_ORIGIN, credentials: true });
+
+  // So DatabaseModule's shutdown hook runs and the connection pool is released; without
+  // it the process lingers on SIGINT instead of exiting.
+  app.enableShutdownHooks();
+
+  await app.listen(apiEnv.API_PORT);
+  new Logger("Bootstrap").log(`API listening on http://localhost:${apiEnv.API_PORT}`);
 }
 
-main();
+void bootstrap();
