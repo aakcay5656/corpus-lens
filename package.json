@@ -20,6 +20,7 @@
     "db:migrate": "pnpm --filter @corpus-lens/db run db:migrate",
     "db:seed": "pnpm --filter @corpus-lens/db run db:seed",
     "db:studio": "pnpm --filter @corpus-lens/db run db:studio",
+    "ingest": "pnpm --filter @corpus-lens/api run ingest",
     "clean": "turbo run clean && rm -rf node_modules .turbo"
   },
   "devDependencies": {

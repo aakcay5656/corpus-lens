@@ -247,3 +247,80 @@ being surprised by it.
 including the breadcrumb. That is the number Step 0 predicted, which is the point of having
 predicted it — a materially different count would have meant a bug. The changelog's
 four-space-indented bullet is present and intact in the emitted chunk.
+
+---
+
+### Step 5 — Ingestion pipeline
+
+- **AI did:** wrote the pipeline over its three interfaces, the filesystem corpus source with
+  SHA-256 hashing, the narrow front-matter parser, the version/lifecycle deriver, the Drizzle
+  store, the Zod-validated CLI with its summary table, and 17 new tests; then ran the whole
+  thing against Postgres and the real 142-document corpus.
+- **I wrote/rewrote:** where the pipeline lives. The obvious move was to put ingestion in
+  `packages/db` next to the schema, or in `packages/rag` next to the chunker. Both are wrong:
+  `packages/rag` may not import `packages/db` (CLAUDE.md §4), and a schema package has no
+  business knowing what ingestion is. Splitting it — orchestration over interfaces in `rag`,
+  the Drizzle implementation in `apps/api` as the composition root — costs one indirection and
+  buys two things I actually wanted: the entire run is unit-tested in memory with no Postgres,
+  and Step 9's `POST /ingest` will construct the same store rather than a second pipeline.
+- **Got it wrong:** two things, and the second is the more serious.
+
+  **(1) A first run over an empty database reported `added: 0, updated: 142`.** The upsert
+  infers which branch it took by comparing `createdAt` with `updatedAt`, and the insert branch
+  was setting `updatedAt: new Date()` — a JavaScript clock — against a `createdAt` filled by
+  Postgres's `defaultNow()`. Those two are never equal, so every insert looked like an update.
+  The Step 2 seed script does the same comparison and works, precisely because it does *not*
+  set `updatedAt` on insert; I had copied the idea without copying the condition that makes it
+  true.
+
+  **(2) Every failed document was writing the full SQL statement into the database.** Drizzle's
+  `error.message` is the entire failed query plus its bound parameters, and the pipeline stores
+  whatever message it catches in `ingestion_events.message` and `documents.error_message` —
+  both of which the admin dashboard will render in Step 12. So a failed insert would have
+  printed our schema and the document's contents into the UI, which is the exact thing
+  CLAUDE.md §7 forbids. The fix takes the driver error's `cause` (postgres.js puts the real
+  diagnosis there — "invalid input syntax for type date") and drops the message entirely when
+  there is no cause, rather than trusting it not to contain SQL.
+
+- **How I caught it:** neither showed up as a failure. The whole first run against Postgres
+  failed loudly for an unrelated reason — Postgres rejects `2025-12` for a `date` column, and
+  108 of 142 documents are dated by month — and it was reading *that* error output that showed
+  the SQL was being stored. The counting bug surfaced afterwards, from looking at a summary
+  table that said `added: 0` on an empty database. Both are cases where the exit code was not
+  the useful signal: one produced a green run with wrong numbers, the other a red run whose
+  real problem was not the one being reported.
+
+**On the date column.** Storing `2025-12` as `2025-12-01` is a deliberate precision loss and
+worth saying out loud, since it is a lie of one day: a monthly delivery report has no exact
+day. The alternative was widening the column to text, which would give up ordering and range
+queries — the only reasons the column exists. The breadcrumb still carries the original
+`2025-12` string, so retrieval sees the truth even though the column rounds.
+
+**Verified rather than assumed**, against the real corpus and a real database:
+
+```
+clean run     142 discovered · 142 added · 142 chunks · 1.9s
+immediate re-run  142 unchanged · 0 chunks written · 0.1s
+--force           142 updated · 142 chunks
+```
+
+The second run is the one that matters: idempotency here is not "it succeeded twice" but "it
+did no work", and `chunks written: 0` is what proves nothing was re-embedded. Separately, in a
+three-file scratch corpus, editing one file and deleting another produced exactly
+`1 updated · 1 unchanged · 1 removed`. In the database afterwards: 142 documents all INDEXED,
+142 chunks all carrying both an embedding and a generated tsvector, and the doc_type
+distribution matching docs/CORPUS.md exactly (78 delivery reports, 30 meeting notes, 13 root,
+10 briefs, 6 changelogs, 3 guides, 2 postmortems).
+
+Two things I checked because they feed later steps rather than this one: `sdk-notes-v2` is
+stored with `lifecycle = deprecated` and `sdk-notes-v3` with `current`, which is the data Step
+7's conflict rule needs — the model will not have to notice the word "DEPRECATED" in the prose.
+And a `chmod 000` file produced `failed: 1` with the other documents still indexed, the error
+recorded against the right phase (PARSE) on both the document row and the event row, and a
+non-zero exit code so a README follower does not read "done" over an incomplete index.
+
+**A Step 4 escape, found here.** `pnpm typecheck` was not in the Step 4 verification block —
+I ran build, test, lint and format — and `apps/mcp/src/main.ts` still imported the
+`package-info` module Step 4 deleted. The commit builds and tests clean but does not typecheck.
+Fixed as part of this step and the verification block now runs all five. Worth recording
+because it is the second time a gate I did not run was the one that mattered.

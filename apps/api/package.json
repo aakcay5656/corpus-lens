@@ -5,14 +5,19 @@
   "type": "commonjs",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "ingest": "tsx src/ingest/cli.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {
     "@corpus-lens/db": "workspace:*",
     "@corpus-lens/rag": "workspace:*",
-    "@corpus-lens/shared": "workspace:*"
+    "@corpus-lens/shared": "workspace:*",
+    "drizzle-orm": "^0.45.2",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.23.12",
     "typescript": "^5.7.2"
   }
 }

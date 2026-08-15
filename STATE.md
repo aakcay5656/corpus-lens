@@ -3,9 +3,9 @@
 Single source of truth for progress. Claude Code updates this at the end of every
 step, before writing the completion report. Read it at the start of every session.
 
-**Current step:** 5 — Ingestion pipeline
-**Last completed step:** 4 — Chunking + embeddings
-**Last commit:** `4de1015` · Step 4 pending
+**Current step:** 6 — Hybrid retrieval
+**Last completed step:** 5 — Ingestion pipeline
+**Last commit:** `7d7ee00` · Step 5 pending
 
 | Step | Commit |
 |---|---|
@@ -13,6 +13,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 1 — Monorepo scaffold | `12dc838` _(shared with Step 2, see below)_ |
 | 2 — Database schema | `12dc838` |
 | 3 — Shared contracts | `4de1015` |
+| 4 — Chunking + embeddings | `7d7ee00` |
 
 > **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
 > the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
@@ -37,7 +38,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 2 | Database schema | P0 | ✅ done |
 | 3 | Shared contracts | P0 | ✅ done |
 | 4 | Chunking + embeddings | P0 | ✅ done |
-| 5 | Ingestion pipeline | P0 | ⬜ |
+| 5 | Ingestion pipeline | P0 | ✅ done |
 | 6 | Hybrid retrieval | P0 | ⬜ |
 | 7 | Grounded answering | P0 | ⬜ |
 | 8 | Auth and authorization | P0 | ⬜ |
@@ -86,6 +87,12 @@ substantial ones into `docs/ADR.md`.
 | 3 | `POST /ingest` does **not** accept a corpus directory from the client | It would let an authenticated admin walk any directory the API process can read — path traversal dressed up as a feature. The directory comes from `CORPUS_DIR` on the server. |
 | 3 | Auth responses carry no tokens in the body | Access and refresh JWTs travel in httpOnly cookies; returning them in the body hands back exactly what the cookie flag exists to withhold. |
 | 3 | `Citation` carries both `marker` and `sourceIndex` | The server drops citation markers that do not match the supplied context, after which the surviving markers are no longer contiguous. The UI has to resolve what the model actually wrote, not what it should have written. |
+| 5 | The pipeline lives in `packages/rag` over interfaces; the Drizzle implementation lives in `apps/api/src/ingest` | `packages/rag` may not import `packages/db` (§4) and `packages/db` has no business knowing about ingestion, so the app is the composition root. The payoff is concrete: the whole run — including failure isolation and hash-skipping — is unit-tested in memory with no Postgres, and Step 9's `POST /ingest` constructs the same store. |
+| 5 | Errors from the Drizzle store are replaced by their `cause` message before they leave it | Drizzle's `error.message` is **the entire failed SQL statement plus its parameters**, and the pipeline writes whatever it catches into `ingestion_events.message` and `documents.error_message`, both rendered in the admin dashboard. Passing it through would print the schema and the document's contents into the UI — precisely what §7 forbids. Where there is no cause, the message is dropped rather than trusted. |
+| 5 | A year-month `doc_date` (`2025-12`) is stored as the first of the month | Postgres rejects `2025-12` for a `date` column outright, and 108 of 142 documents are dated by month. Widening the column to text would lose ordering and range queries, which is what the column is for. The precision loss is deliberate; the breadcrumb still carries the original `2025-12`, so retrieval is unaffected. |
+| 5 | Front-matter support is flat `key: value` only, and reports the lines it could not read | The corpus has no front-matter at all (§2), so a full YAML dependency would be a library added on speculation. Unsupported lines are surfaced as a WARN event rather than silently dropped, which is what will signal that a future corpus needs a real parser. |
+| 5 | A run with failed documents is `COMPLETED` with a non-zero `documents_failed`, not `FAILED` | The run did everything it could; `FAILED` is reserved for the run itself dying, which is a different thing for an operator to react to. The CLI still exits non-zero, so a README follower or CI job does not read "done" over an incomplete index. |
+| 5 | `updatedAt` is left unset on the insert branch of the document upsert | An upsert cannot report which branch it took, so it is inferred from `createdAt === updatedAt`. Setting `updatedAt: new Date()` compares a JavaScript clock against Postgres's `defaultNow()`; they are never equal, which made a first run over an empty table report 142 updates and 0 inserts. |
 | 4 | Markdown is parsed by a hand-written **line scanner**, not by remark/mdast | The scanner needs to know two things — where headings are and where fenced code is — and a CommonMark AST gets the corpus wrong on exactly the case that matters: the changelogs' 4-space-indented first bullet parses as an indented code block. ~90 lines I can defend beats a parser whose edge cases I would have to work around. |
 | 4 | `gpt-tokenizer` for real BPE counts, not a `words × 1.33` proxy | Both the chunk budget and the embedding batch cap are enforced against the model's real 8191-token input limit and per-request token limit; a proxy that under-counts turns into a 400 from the API on the first non-English or code-heavy corpus. Chosen over `js-tiktoken` (identical counts) because js-tiktoken ships ESM-only *types* against a dual runtime, which the Node16 resolver rejects from a CommonJS package. |
 | 4 | OpenAI embeddings over raw `fetch`, not the `openai` SDK | The deliverable here *is* the failure policy — bounded timeout, one retry, transient-vs-permanent classification. The SDK ships its own retry and timeout defaults, so using it would mean inheriting a policy I did not choose or configuring it off and writing this anyway. |
@@ -106,18 +113,17 @@ schedule them.
 - ~~**Step 4:** the changelogs' 4-space-indented first bullet.~~ Done — the parser is a line
   scanner rather than an AST walk precisely so this is ordinary text, pinned by a fixture test
   in `markdown-sections.test.ts` and confirmed on the real file.
-- **Step 5:** ingestion must assert `provider.dimensions === EMBEDDING_DIMENSIONS` (from
-  `@corpus-lens/db/schema/chunks`) before writing. `packages/rag` cannot import `packages/db`,
-  so this is the one place both numbers are in scope; without the check a mismatched
-  `EMBEDDING_DIMENSIONS` fails as an opaque Postgres error on the first insert.
-- **Step 5:** the env vars added in Step 4 (`EMBEDDING_PROVIDER`, `EMBEDDING_DIMENSIONS`,
-  `EMBEDDING_MODEL`, `OPENAI_API_KEY`) are in `.env.example` but not yet Zod-validated —
-  `packages/rag` is a library and deliberately does not read `process.env`. The ingest CLI
-  validates them at startup.
-- **Step 5:** `documents.version` and `documents.lifecycle` are still unfilled.
-  `deriveSourceMetadata` covers only what the breadcrumb needs (docType/date/subject);
-  lifecycle comes from the body's first lines (`Status: deprecated since…`) and feeds Step 7's
-  conflict rule.
+- ~~**Step 5:** dimension assertion, env validation, `version`/`lifecycle`.~~ All three done —
+  `apps/api/src/ingest/env.ts` validates the embedding vars with Zod and fails startup on a
+  width mismatch; `document-attributes.ts` fills `version` and `lifecycle` (verified in the
+  database: `sdk-notes-v2` → `deprecated`, `sdk-notes-v3` → `current`).
+- **Step 9:** `POST /ingest` must run the pipeline **in the background** and return the run id
+  immediately. A full run is ~2s on this corpus with the offline provider, but with the OpenAI
+  provider it is bounded by 142 embedding calls and would hold an HTTP request open past any
+  sensible timeout. The run row already exists to be polled.
+- **Step 9 / 12:** `documents.error_message` and `ingestion_events.message` may contain absolute
+  server paths (an `EACCES` reports the full filesystem path). Acceptable because both are
+  admin-only reads, but do not surface either on a `USER`-visible route.
 - **Step 6:** if the 78 near-duplicate delivery reports crowd out root reference documents on
   general queries (eval `q7`), the lever is a `doc_type` prior in fusion or a search filter —
   **not** a change to chunk size. See `docs/CORPUS.md` §5.
@@ -167,7 +173,7 @@ anything manual.
 - `pnpm db:studio` serves on port 4983 (UI at https://local.drizzle.studio).
 - Corpus path: **`./sample_dataset/corpus`** (git-ignored) — note the nesting;
   `sample_dataset/sample_questions.md` sits outside it and must not be ingested
-- Corpus size: 142 Markdown files, ~23.6k tokens. Expected chunk count after Step 5: **~142**
+- Corpus size: 142 Markdown files, ~23.6k tokens. Chunk count after Step 5: **142** (measured)
 - Step 4 measured it: the chunker produces **exactly 142 chunks from 142 documents**, one each,
   min 45 / max 253 tokens including the breadcrumb. The Step 0 prediction held, and a
   materially different number from `pnpm ingest` means the chunker has a bug.
@@ -175,4 +181,10 @@ anything manual.
   with no API key. Set it to `openai` with `OPENAI_API_KEY` for real retrieval quality — never
   quote evaluation numbers from a deterministic run.
 - rag deps: gpt-tokenizer 3.4.0 (cl100k_base) · vitest 4.1.10
+- api deps: drizzle-orm 0.45.2 · zod 4.4.3 · tsx 4.23.12 (the ingest CLI runs from apps/api)
+- `pnpm ingest` walks `CORPUS_DIR`; `pnpm ingest --dir <path>` overrides it, `--force` re-embeds
+  everything, `--quiet` suppresses per-document warnings. Exits non-zero if any document failed.
+- Verified in Step 5 against the real corpus: clean run 142 added / 142 chunks / 1.9s; immediate
+  re-run 142 unchanged / 0 chunks / 0.1s; `--force` 142 updated. All 142 rows INDEXED, all 142
+  chunks carry both an embedding and a tsvector.
 - API: port 3001 · Web: port 3000 · MCP: port 3002
