@@ -1,6 +1,3 @@
-import { type Database } from "@corpus-lens/db/client";
-import { chunks } from "@corpus-lens/db/schema/chunks";
-import { documents } from "@corpus-lens/db/schema/documents";
 import { toKeywordQuery } from "@corpus-lens/rag/keyword-query";
 import {
   type RetrievalFilters,
@@ -9,10 +6,23 @@ import {
 } from "@corpus-lens/rag/retriever";
 import { and, cosineDistance, desc, eq, gt, isNotNull, sql, type SQL } from "drizzle-orm";
 
+import { type Database } from "./client";
+import { chunks } from "./schema/chunks";
+import { documents } from "./schema/documents";
+
 /**
- * The two SQL queries behind hybrid retrieval, and the only part of it that needs a
- * database. Everything above this — candidate budgets, fusion, ordering — lives in
- * `packages/rag` and is tested without Postgres.
+ * The two SQL queries behind hybrid retrieval — the adapter for the port `packages/rag`
+ * defines.
+ *
+ * It lives in `packages/db` rather than in an app because **both** `apps/api` and
+ * `apps/mcp` construct it. That is the concrete payoff of the monorepo layout claimed in
+ * CLAUDE.md §4: the MCP tool is not a reimplementation of search, it is the same
+ * `retrieve()` over the same SQL, differing only in transport.
+ *
+ * The dependency direction is the ports-and-adapters one: the interface belongs to the
+ * domain package (`rag`), the implementation to the infrastructure package (`db`), and
+ * the adapter depends on the port. `rag` still imports nothing from `db`, so retrieval
+ * remains testable with no database at all.
  */
 export function createDrizzleRetrievalRepository(db: Database): RetrievalRepository {
   return {

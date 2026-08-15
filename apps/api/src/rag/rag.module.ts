@@ -9,7 +9,7 @@ import { createTokenCounter, type TokenCounter } from "@corpus-lens/rag/tokenize
 
 import { apiEnv } from "../config/env";
 import { DATABASE } from "../database/database.module";
-import { createDrizzleRetrievalRepository } from "../retrieval/drizzle-retrieval-repository";
+import { createDrizzleRetrievalRepository } from "@corpus-lens/db/retrieval-repository";
 
 /**
  * The retrieval package, wired as injectable providers.

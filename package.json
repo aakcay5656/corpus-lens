@@ -23,6 +23,7 @@
     "ingest": "pnpm --filter @corpus-lens/api run ingest",
     "eval": "pnpm --filter @corpus-lens/api run eval",
     "ask": "pnpm --filter @corpus-lens/api run ask",
+    "mcp": "pnpm --filter @corpus-lens/mcp run start",
     "clean": "turbo run clean && rm -rf node_modules .turbo"
   },
   "devDependencies": {

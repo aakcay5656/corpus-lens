@@ -3,9 +3,9 @@
 Single source of truth for progress. Claude Code updates this at the end of every
 step, before writing the completion report. Read it at the start of every session.
 
-**Current step:** 13 — MCP server
-**Last completed step:** 12 — Dashboard
-**Last commit:** `c119f58` · Step 12 pending
+**Current step:** 14 — Documentation
+**Last completed step:** 13 — MCP server
+**Last commit:** `8636ecc` · Step 13 pending
 
 | Step | Commit |
 |---|---|
@@ -21,6 +21,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 9 — API endpoints | `0f2c553` |
 | 10 — App shell and auth flow | `e8e66dd` |
 | 11 — Chat page | `c119f58` |
+| 12 — Dashboard | `8636ecc` |
 
 > **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
 > the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
@@ -53,7 +54,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 10 | App shell and auth flow | P0 | ✅ done |
 | 11 | Chat page | P0 | ✅ done |
 | 12 | Dashboard | P0 | ✅ done |
-| 13 | MCP server | P0 | ⬜ |
+| 13 | MCP server | P0 | ✅ done |
 | 14 | Documentation | P0 | ⬜ |
 | 15 | Self-updating ingestion | P2 | ⬜ |
 | 16 | Evaluation harness | P2 | ⬜ |
@@ -94,6 +95,12 @@ substantial ones into `docs/ADR.md`.
 | 3 | `POST /ingest` does **not** accept a corpus directory from the client | It would let an authenticated admin walk any directory the API process can read — path traversal dressed up as a feature. The directory comes from `CORPUS_DIR` on the server. |
 | 3 | Auth responses carry no tokens in the body | Access and refresh JWTs travel in httpOnly cookies; returning them in the body hands back exactly what the cookie flag exists to withhold. |
 | 3 | `Citation` carries both `marker` and `sourceIndex` | The server drops citation markers that do not match the supplied context, after which the surviving markers are no longer contiguous. The UI has to resolve what the model actually wrote, not what it should have written. |
+| 13 | The Drizzle retrieval adapter **moved** from `apps/api` to `packages/db`, and `db` now depends on `rag` | Both apps construct it, and an app may not import another app. The direction is the ports-and-adapters one: the port (`RetrievalRepository`) belongs to the domain package, the adapter to the infrastructure package, and the adapter depends on the port. `rag` still imports nothing from `db`, so retrieval stays testable with no database. This is what makes "the MCP tool is not a reimplementation" literally true rather than aspirational — **verified byte-identical results** through both front doors. |
+| 13 | The MCP server verifies JWTs itself with the **same `JWT_ACCESS_SECRET`**, and additionally looks the user up | §9: it is a second front door to the same data. Sharing the secret is what "validated against the same user store" means concretely — no second credential system to keep in sync. The database lookup is the extra: a JWT cannot be withdrawn before it expires, and an MCP client holds a token by hand for much longer than a browser does, so a deleted account should stop working immediately. The **role comes from the row, not the claim**. |
+| 13 | Authentication runs **before** the MCP handshake | An unauthenticated caller must not be able to enumerate tool names — that is information about the system it has no claim to. Verified: a garbage token gets 401 and no tool list. |
+| 13 | Stateless mode — a fresh server and transport per request, no session ids | A session map means holding caller identity in memory and deciding when to evict it; a session would also outlive a revoked user. Every request carries its own token and is judged on its own merits. The transport and server are closed on `response.close` so per-request objects do not leak. |
+| 13 | Streamable HTTP rather than stdio | §3's reason, and it holds up: a stdio server has no request to carry a credential on, so authenticating it means inventing a mechanism. Over HTTP the credential is an ordinary `Authorization` header and the Step 17 OIDC swap touches one file. `WWW-Authenticate` is already returned on 401 — the hook an OIDC flow advertises itself through. |
+| 13 | Tool bounds come from `packages/shared/limits` | An MCP client is not a friendlier caller than a browser; an unbounded `topK` is the same denial-of-service against the embedding bill. Verified: `topK: 999` is rejected by the tool's own schema. |
 | 12 | Headline numbers are **stat tiles, not charts**; only volume-over-time is plotted | A single current value rendered as a one-bar chart adds axes and a plot area to communicate one number. The one genuine time series gets a single-hue column chart with no legend — a legend for one series just repeats the title. |
 | 12 | The chart is ~30 lines of divs and CSS, with no charting dependency and no client JavaScript | It is one single-series column chart; a charting library would be the largest dependency in the web app by an order of magnitude. Hover is CSS-only, so the whole dashboard stays server-rendered. |
 | 12 | `loading.tsx` exists **only** on `/chat`, not app-wide | A `loading.tsx` creates a Suspense boundary, and once the shell has flushed the status line is written — so `notFound()` beneath it cannot produce a 404 and a missing document answered **200**. Measured both ways: with the boundary 200, without it 404. Dashboard detail pages need the status, chat has no not-found path. Nothing is lost: those pages render in tens of milliseconds and the loading states that matter are in the components that actually wait. |
@@ -294,6 +301,12 @@ anything manual.
   re-run 142 unchanged / 0 chunks / 0.1s; `--force` 142 updated. All 142 rows INDEXED, all 142
   chunks carry both an embedding and a tsvector.
 - API: port 3001 · Web: port 3000 · MCP: port 3002
+- MCP: `pnpm --filter @corpus-lens/mcp run build && pnpm mcp` → `http://localhost:3002/mcp`.
+  Needs the same `.env` as the API, above all the same `JWT_ACCESS_SECRET`. Client config,
+  token recipe and tool reference are in **`apps/mcp/README.md`**; Step 14 folds them into the
+  root README.
+- Get a bearer token for MCP by reading the `cl_access` cookie out of a login response — the
+  exact command is in `apps/mcp/README.md`. `USER` is sufficient.
 - Web: `pnpm --filter @corpus-lens/web run build` then `run start` (or `run dev`). Requires the
   API running — the middleware calls `/auth/me` on every navigation.
 - `/chat` is live: streamed answer, interactive citation chips that scroll to and highlight the

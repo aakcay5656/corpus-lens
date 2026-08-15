@@ -19,5 +19,7 @@
   // drizzle.config.ts is checked but not emitted into dist — it is CLI input, not library
   // code, which is why it sits outside src/.
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../shared" }]
+  // db implements the retrieval port that rag defines (ports and adapters), so the
+  // dependency points this way. rag still imports nothing from db.
+  "references": [{ "path": "../shared" }, { "path": "../rag" }]
 }

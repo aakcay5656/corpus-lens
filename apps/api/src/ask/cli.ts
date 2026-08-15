@@ -8,7 +8,7 @@ import { createTokenCounter } from "@corpus-lens/rag/tokenizer";
 import { TOP_K_DEFAULT, TOP_K_MAX, TOP_K_MIN } from "@corpus-lens/shared/limits";
 
 import { ingestEnv } from "../config/env";
-import { createDrizzleRetrievalRepository } from "../retrieval/drizzle-retrieval-repository";
+import { createDrizzleRetrievalRepository } from "@corpus-lens/db/retrieval-repository";
 
 /**
  * `pnpm ask "question"` — the grounded answer path from a terminal.

@@ -8,7 +8,7 @@ import { createTokenCounter } from "@corpus-lens/rag/tokenizer";
 import { parse as parseYaml } from "yaml";
 
 import { ingestEnv, resolveRepositoryPath } from "../config/env";
-import { createDrizzleRetrievalRepository } from "../retrieval/drizzle-retrieval-repository";
+import { createDrizzleRetrievalRepository } from "@corpus-lens/db/retrieval-repository";
 
 /**
  * `pnpm eval` — runs `eval/queries.yaml` against live retrieval and prints, per query,

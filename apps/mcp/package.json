@@ -4,15 +4,28 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
+    "build": "rm -rf dist && tsc",
+    "start": "node dist/main.js",
+    "dev": "tsx watch src/main.ts",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
   "dependencies": {
     "@corpus-lens/db": "workspace:*",
     "@corpus-lens/rag": "workspace:*",
-    "@corpus-lens/shared": "workspace:*"
+    "@corpus-lens/shared": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "dotenv": "^17.4.2",
+    "drizzle-orm": "^0.45.2",
+    "express": "^5",
+    "jsonwebtoken": "^9",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/express": "^5",
+    "@types/jsonwebtoken": "^9",
+    "@types/node": "^22.10.5",
+    "tsx": "^4.23.12",
     "typescript": "^5.7.2"
   }
 }

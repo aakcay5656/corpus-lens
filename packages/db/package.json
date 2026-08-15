@@ -18,6 +18,7 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
+    "@corpus-lens/rag": "workspace:*",
     "@corpus-lens/shared": "workspace:*",
     "@node-rs/argon2": "^2.1.0",
     "dotenv": "^17.4.2",

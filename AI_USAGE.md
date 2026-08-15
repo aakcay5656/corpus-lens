@@ -875,3 +875,89 @@ a punctuation character into a search box.
 everywhere, tables that scroll inside their own container rather than overflowing the page, no
 fixed pixel widths — but I have not opened any of this at 375px in a real browser. That remains
 the one claim in these last three reports I would want to check myself.
+
+---
+
+### Step 13 — MCP server
+
+- **AI did:** moved the Drizzle retrieval adapter into `packages/db`, wrote the MCP server over
+  Streamable HTTP with its two tools, the bearer-token authentication and the environment
+  validation, and `apps/mcp/README.md` with the client config; then drove the protocol by hand —
+  initialize, tools/list, tools/call — and compared its output against the REST API's.
+- **I wrote/rewrote:** where the retrieval adapter lives. It had been sitting in
+  `apps/api/src/retrieval/` since Step 6, which was fine while one app used it and became wrong
+  the moment a second one did — an app cannot import another app. The tempting shortcut was to
+  have the MCP server call `POST /search` over HTTP, which would have worked and would have
+  quietly abandoned the claim the whole monorepo layout exists to support. Moving the adapter
+  into `packages/db` costs one dependency edge and makes the claim literal.
+
+  The edge is `db → rag`, which looks backwards until you name it: the *port*
+  (`RetrievalRepository`) belongs to the domain package, the *adapter* to the infrastructure
+  package, and an adapter depends on its port. `rag` still imports nothing from `db`, so
+  retrieval remains unit-testable with no database at all.
+
+- **Got it wrong:** nothing that survived to a running system this step. The one thing I nearly
+  reported as a defect turned out to be my own measuring instrument, which is worth recording
+  because I would have written down a false finding.
+
+  Comparing the same query through both front doors, one score came back as `0.0312` from the
+  API and `0.0313` from the MCP tool. My first instinct was that HNSW's approximate search had
+  returned slightly different neighbours. Before writing that down I ran the API three times in
+  a row and got an identical `0.03125` each time — so it was not run-to-run variance, and the
+  difference had to be in the comparison. It was: my extraction script formatted the API's score
+  with Python's `:.4f`, which rounds half-to-even, while the MCP tool renders with JavaScript's
+  `toFixed(4)`, which rounds half-up. `0.03125` is exactly the tie case. Re-running the
+  comparison with the same rounding on both sides gives byte-identical output.
+
+- **How I caught it:** by not trusting a one-digit discrepancy enough to explain it. The
+  explanation I had ready — approximate nearest-neighbour search — was plausible, which is what
+  made it dangerous; it would have gone into this document as a real characteristic of the
+  system. The check that killed it took thirty seconds.
+
+**The architectural claim, measured:**
+
+```
+same query, POST /search vs the search_corpus MCP tool
+
+API: guides/asset-naming.md@0.0325 | build-pipeline.md@0.0323 |
+     incident-postmortem-2026-03.md@0.0313 | client-briefs/gloom-garden.md@0.0284
+MCP: guides/asset-naming.md@0.0325 | build-pipeline.md@0.0323 |
+     incident-postmortem-2026-03.md@0.0313 | client-briefs/gloom-garden.md@0.0284
+                                              → identical
+```
+
+Not similar — the same `retrieve()`, the same SQL, the same fusion. The only thing that differs
+between the two front doors is the transport and the shape of the reply.
+
+**Authentication, and why it is two checks rather than one.** The signature is verified against
+the *same* `JWT_ACCESS_SECRET` the API signs with, which is what "validated against the same user
+store" means concretely: there is no second credential system to drift. On top of that the user
+is looked up by id, and the role is taken from the database row rather than the token's claim. A
+JWT is a bearer credential that cannot be withdrawn before it expires; an MCP client holds one by
+hand for far longer than a browser does, so a deleted or demoted account should stop working now
+rather than in fifteen minutes. The API can skip this because its tokens are short-lived and
+revocation bites at the refresh; here it is worth one query.
+
+**Verified:**
+
+```
+no token                     401 + WWW-Authenticate: Bearer realm="corpus-lens"
+garbage token                401 — tool names are not enumerable without one
+initialize                   protocol 2025-06-18, capabilities: tools
+tools/list                   search_corpus, get_document
+search_corpus topK=999       rejected: "Too big: expected number to be <=20 at topK"
+search_corpus docType=guide  only guides/* returned
+get_document (deprecated doc) surfaces lifecycle: deprecated in the metadata
+get_document unknown id      isError, not an exception
+```
+
+That last `lifecycle` line is deliberate rather than incidental: the corpus ships a deprecated
+document beside its replacement, and a client that cannot see which is which will quote
+superseded guidance as current — the same failure the answering prompt's conflict rule exists to
+prevent, arriving through a different door.
+
+**What I have not done.** I drove the protocol with curl — the real handshake, the real headers,
+the real SSE framing — but I have not attached a GUI MCP client such as Claude Desktop. The
+config in `apps/mcp/README.md` is written from the transport's requirements rather than from
+having watched a client consume it, and connecting one is the check I would want before calling
+this done. The token's 15-minute default lifetime is the part most likely to bite there.
