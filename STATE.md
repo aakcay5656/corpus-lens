@@ -3,9 +3,9 @@
 Single source of truth for progress. Claude Code updates this at the end of every
 step, before writing the completion report. Read it at the start of every session.
 
-**Current step:** 7 — Grounded answering
-**Last completed step:** 6 — Hybrid retrieval
-**Last commit:** `1769e43` · Step 6 pending
+**Current step:** 8 — Auth and authorization
+**Last completed step:** 7 — Grounded answering
+**Last commit:** `1702e0b` · Step 7 pending
 
 | Step | Commit |
 |---|---|
@@ -15,6 +15,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 3 — Shared contracts | `4de1015` |
 | 4 — Chunking + embeddings | `7d7ee00` |
 | 5 — Ingestion pipeline | `1769e43` |
+| 6 — Hybrid retrieval | `1702e0b` |
 
 > **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
 > the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
@@ -41,7 +42,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 4 | Chunking + embeddings | P0 | ✅ done |
 | 5 | Ingestion pipeline | P0 | ✅ done |
 | 6 | Hybrid retrieval | P0 | ✅ done |
-| 7 | Grounded answering | P0 | ⬜ |
+| 7 | Grounded answering | P0 | ✅ done |
 | 8 | Auth and authorization | P0 | ⬜ |
 | 9 | API endpoints | P0 | ⬜ |
 | 10 | App shell and auth flow | P0 | ⬜ |
@@ -88,6 +89,12 @@ substantial ones into `docs/ADR.md`.
 | 3 | `POST /ingest` does **not** accept a corpus directory from the client | It would let an authenticated admin walk any directory the API process can read — path traversal dressed up as a feature. The directory comes from `CORPUS_DIR` on the server. |
 | 3 | Auth responses carry no tokens in the body | Access and refresh JWTs travel in httpOnly cookies; returning them in the body hands back exactly what the cookie flag exists to withhold. |
 | 3 | `Citation` carries both `marker` and `sourceIndex` | The server drops citation markers that do not match the supplied context, after which the surviving markers are no longer contiguous. The UI has to resolve what the model actually wrote, not what it should have written. |
+| 7 | The abstention **score floor is derived, not tuned**: `1/(k+1) + 1/(k+candidates)` = 0.0289 | It is the score of a chunk ranked first by one arm and last-of-candidates by the other, so the floor asserts exactly one thing — at least one chunk was found by *both* retrieval arms. Measured: in-corpus questions score 0.0306–0.0328, the fully off-domain one scores 0.0164 (= `1/(k+1)`, one arm alone). No number was picked to make that separation happen. |
+| 7 | Abstention is detected by a **sentinel token**, not by reading the prose | Searching an answer for apologetic phrasing is exactly the string-matching the `answered` boolean exists to replace, and it breaks the moment the model rephrases or replies in another language. The sentinel is compared against the whole response, so a model *discussing* the rule is not mistaken for one obeying it. |
+| 7 | Generation uses the OpenAI `/v1/chat/completions` wire format, **not** the official Anthropic SDK — deviates from `CLAUDE.md` §3 | The model is still Claude (`anthropic/claude-sonnet-5`). The credential available is an OpenRouter key, which does not expose Anthropic's `/v1/messages`; Step 6 already built this seam for embeddings, so one wire format means one streaming parser and one retry policy to defend instead of two; and the `ChatProvider` interface §3 actually asks for is unchanged, so an SDK-backed implementation is one file and one factory branch. |
+| 7 | There is **no offline chat provider**, unlike embeddings | A hashing trick can stand in for an embedding model because both produce a vector whose only job is to be compared. Nothing can stand in for generation: canned text would make the abstain rule and the citation validator *look* exercised when they never ran. Search, ingestion and the dashboard all work without a chat key; only answering needs one. |
+| 7 | The SSE stream parser holds a trailing partial line between chunks | A network chunk boundary lands mid-JSON regularly. A parser that assumes whole lines works locally and silently drops tokens under real latency. |
+| 7 | Dropped citation markers are removed from the prose, not just from the citation list | A `[7]` with nothing behind it reads as a broken product and, worse, still lends the sentence an air of having been sourced. Surrounding whitespace is tidied so removal does not leave a gap before the full stop. |
 | 6 | The keyword arm rewrites the question to **OR** before `websearch_to_tsquery` | Every Postgres tsquery constructor ANDs its terms, so an 8-term question demanded all 8 lexemes in one 200-token chunk and matched nothing. The keyword arm was returning zero rows for most of the eval set and RRF was fusing one list with an empty one — hybrid retrieval was silently vector-only. OR gives recall; `ts_rank` supplies precision by scoring lexeme coverage, so AND is demoted from a filter to a ranking signal. |
 | 6 | `websearch_to_tsquery`, never `to_tsquery` | It is the only constructor that cannot be made to raise on hostile input — `to_tsquery` throws a syntax error on an unbalanced quote, turning a malformed search into a 500. With the OR rewrite going through it, there is no query-injection surface even though the terms come from a user. |
 | 6 | The vector arm orders by the raw distance expression, not by `1 - distance` | The HNSW index is built on the `<=>` operator; wrapping it in arithmetic makes the expression unindexable and forces a sequential scan. The `1 - distance` value is still selected, for display only. |
@@ -141,12 +148,15 @@ schedule them.
   multi-intent query rather than a retrieval defect — see the decision table. The remedy is
   query decomposition (retrieve per sub-question and fuse) or LLM reranking of the fused top
   20, both already scoped there. **Do not** edit the query or tune fusion to make it pass.
-- **Step 7:** the retrieval score floor has a clean signal to key off. Measured over the eval
-  set: in-corpus queries top out at 0.0325–0.0328 (both arms rank the document highly), while
-  the fully off-domain q12 tops out at **0.0164** — exactly `1/(60+1)`, the signature of a
-  single arm contributing with nothing agreeing. Roughly a 2× gap, and it falls out of RRF's
-  structure rather than from a tuned threshold. Note q10/q11 top 0.0325 despite being
-  unanswerable, so the floor alone cannot catch them — that is what the prompt rule is for.
+- ~~**Step 7:** score floor, conflict rule.~~ Both done and demonstrated. The floor is derived
+  from RRF's arithmetic and lands at 0.0289; the prediction held exactly — q12 abstains on the
+  floor without calling the model, q10/q11 clear the floor and are caught by the prompt rule.
+- **Step 9:** `POST /answer` must log `droppedMarkers` to `search_queries`. It is not on the
+  wire contract (the client has no use for it), but a rising count is the earliest signal that
+  the prompt or the context size has regressed.
+- **Step 11:** citation markers are **not contiguous** after validation — a real answer cited
+  `[1][2][6]`. The chat page must resolve `citation.marker` to `citation.sourceIndex`, never
+  assume the nth citation is the nth source.
 - **Step 7 / `CLAUDE.md` §6:** the corpus attributes Merge Marina to 7 different clients across
   meeting notes. "Who is the client for Merge Marina?" has no supported answer; the conflict
   rule should surface the disagreement rather than pick one.
@@ -205,6 +215,12 @@ anything manual.
   embedding call is nearly all of it (retrieval itself is single-digit ms on 142 chunks).
 - **Eval result (real embeddings): 8/9 answerable queries.** All five shipped dataset queries
   (q1–q5) return their expected document at **rank 1**. Only the self-authored q7 fails.
+- Generation: `anthropic/claude-sonnet-5` via the same OpenRouter gateway. A grounded answer is
+  ~3–4s end to end (embed ~0.5s, retrieve ~25ms, generate ~3s); a floor abstention is ~0.6s
+  because the model is never called.
+- `pnpm ask "question" [--k 6] [--sources] [--no-stream]` runs the full answer path from a
+  terminal. `--sources` prints what the model was actually shown, which is the only way to tell
+  a retrieval failure from a generation failure.
 - rag deps: gpt-tokenizer 3.4.0 (cl100k_base) · vitest 4.1.10
 - api deps: drizzle-orm 0.45.2 · zod 4.4.3 · tsx 4.23.12 · yaml 2.7.0 (ingest + eval CLIs)
 - `pnpm eval` runs `eval/queries.yaml` against live retrieval and exits non-zero if an

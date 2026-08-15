@@ -416,3 +416,92 @@ re-embed 142 chunks 65s · search ~450ms end to end, almost all of it the embedd
 from a threshold I picked. The honest caveat is in the same numbers: q10 and q11 are also
 unanswerable and still top 0.0325, because `company-overview.md` is genuinely about the company.
 The floor is the cheap half of abstention; the prompt rule has to do the rest.
+
+---
+
+### Step 7 — Grounded answering
+
+- **AI did:** wrote the `ChatProvider` interface and its streaming implementation, the system
+  prompt, the citation validator, the two-layer abstention in `answer.ts`, the `pnpm ask` CLI,
+  and 21 new tests; then ran the real thing against the corpus for both the answer case and all
+  three abstention cases.
+- **I wrote/rewrote:** the score floor, which arrived as a magic number. The first version had
+  `MIN_SCORE = 0.02` with a comment pointing at the Step 6 measurements — a value chosen because
+  it sat between the numbers I had just seen, which is the definition of fitting a threshold to
+  a sample. It is now derived: `1/(k+1) + 1/(k+candidates)`, the score of a chunk ranked first
+  by one arm and last-of-candidates by the other. That expression asserts one thing in English
+  — *at least one chunk was found by both retrieval arms* — and it happens to evaluate to
+  0.0289. Same behaviour, but now it is a rule rather than a number, and it moves correctly if
+  k or the candidate budget ever changes.
+- **Got it wrong:** the abstention detector. The first version searched the response for the
+  sentinel with `includes()`. That means a model which writes "the rule says to reply NO_ANSWER
+  when unsupported" — explaining the instruction rather than obeying it — has its real,
+  correctly-cited answer thrown away and replaced with "not in the corpus". It is a silent
+  failure in the worst direction: the system looks appropriately cautious while destroying good
+  output.
+- **How I caught it:** writing the test list rather than the code. Enumerating what the detector
+  must *not* fire on is a different exercise from enumerating what it must fire on, and the
+  second list is the one that finds this. It now compares the whole normalised response, while
+  still tolerating a sentinel the model wrapped in bold or a code fence.
+
+**A deviation from CLAUDE.md §3, recorded rather than quietly taken.** §3 specifies Anthropic
+Claude "via official SDK". The model is Claude — `anthropic/claude-sonnet-5` — but the transport
+is the OpenAI `/v1/chat/completions` wire format, because the credential available is an
+OpenRouter key and OpenRouter does not expose Anthropic's `/v1/messages`. Two things make this
+cheap rather than a compromise: Step 6 already built exactly this seam for embeddings, so there
+is one streaming parser and one retry policy in the repository rather than two; and the
+`ChatProvider` interface §3 actually asks for is untouched, so an SDK-backed implementation is
+one new file and one factory branch.
+
+**No offline chat provider, deliberately** — which is the opposite of the call I made for
+embeddings in Step 4. A hashing trick can stand in for an embedding model because both produce
+a vector whose only job is to be compared against other vectors. Nothing can stand in for
+generation: canned text would make the abstain rule and the citation validator *look* exercised
+when they had never run once. Search, ingestion and the dashboard all work with no chat key at
+all; asking a question is the single feature that requires one, and that is the honest place to
+draw the line.
+
+**Both abstention layers demonstrated, each firing on the case it exists for.** This is the part
+I would have got wrong by building only one:
+
+```
+"What is the recommended HNSW ef_construction value for pgvector?"   (fully off-domain)
+  → answered false · NO_RELEVANT_CONTEXT · top score 0.0164 · generate —ms · total 580ms
+    the model is never called
+
+"How many vacation days do Lumen employees get per year?"            (topic covered, answer not)
+  → answered false · MODEL_DECLINED · top score 0.0328 · generate 2284ms
+
+"What is the salary band for a senior developer at Lumen?"
+  → answered false · MODEL_DECLINED · top score 0.0325 · generate 2505ms
+```
+
+The floor cannot catch the last two: `company-overview.md` scores 0.0328 because it genuinely
+is about the company, it just does not mention holidays or pay. And the prompt rule cannot
+replace the floor either, because doing so would spend a generation call on every off-domain
+question. The prediction recorded at the end of Step 6 held exactly.
+
+**The graded conflict case, verbatim.** The dataset's question 2 is marked as requiring the
+answer to identify v2 as deprecated:
+
+> To initialize the current SDK (v3), call `LumenSDK.init(config)` before any game code runs
+> … [1]. `lumen.track` was the event method from the deprecated v2 SDK [2]. In v3, events are
+> sent with `LumenSDK.event(name, payload)` instead … [1]. Note that v2 is superseded by v3 and
+> should not be used for new playables [1][2].
+>
+> [1] sdk-notes-v3.md · [2] sdk-notes-v2.md
+
+Worth noting *why* that works without any extra plumbing: the breadcrumb built in Step 4 puts
+the document title into the embedded text, and these two titles are "Lumen SDK v3 (current)" and
+"Lumen SDK v2 (DEPRECATED)". The supersession reaches the model because of a decision made three
+steps earlier for a different reason.
+
+**The near-duplicate case paying off end to end.** Asked about the December 2025 Merge Marina
+delivery, the model was shown six near-identical delivery reports and cited `[4]` — the correct
+month. Without `2025-12 · merge-marina` in each source header it could not have told source 4
+from sources 1, 2, 3, 5 and 6, because their bodies are drawn from the same fifteen sentences.
+
+**One contract detail this confirmed.** A real answer cited `[1][2][6]` — non-contiguous, because
+the model cites the sources it used rather than the first three it was given. That is exactly why
+`Citation` carries both `marker` and `sourceIndex` (Step 3), and it is a note for Step 11: the
+chat page must resolve markers, never assume the nth citation is the nth source.

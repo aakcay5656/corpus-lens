@@ -7,6 +7,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 // for a missing database URL that `pnpm db:migrate` gives.
 import { env as databaseEnv } from "@corpus-lens/db/env";
 import { EMBEDDING_DIMENSIONS } from "@corpus-lens/db/schema/chunks";
+import { DEFAULT_CHAT_MODEL } from "@corpus-lens/rag/chat-provider-factory";
 import {
   DEFAULT_EMBEDDING_MODEL,
   EMBEDDING_PROVIDER_KINDS,
@@ -39,6 +40,13 @@ const ingestEnvSchema = z.object({
   // servers too, so the vendor is a URL rather than a code change. Validated as a URL so a
   // typo fails at startup instead of as a confusing fetch error mid-run.
   OPENAI_BASE_URL: z.url().optional(),
+
+  // Generation. Separate from the embedding settings because the two are genuinely
+  // independent choices: search and the dashboard work with no chat model at all, and a
+  // deployment may reasonably embed locally while generating through a hosted API.
+  CHAT_MODEL: z.string().min(1).default(DEFAULT_CHAT_MODEL),
+  CHAT_BASE_URL: z.url().optional(),
+  CHAT_API_KEY: z.string().optional(),
 });
 
 const parsed = ingestEnvSchema.safeParse(process.env);
@@ -62,7 +70,16 @@ if (parsed.data.EMBEDDING_DIMENSIONS !== EMBEDDING_DIMENSIONS) {
   );
 }
 
-export const ingestEnv = { ...parsed.data, DATABASE_URL: databaseEnv.DATABASE_URL };
+export const ingestEnv = {
+  ...parsed.data,
+  DATABASE_URL: databaseEnv.DATABASE_URL,
+
+  // One key usually covers both when a single gateway serves embeddings and generation,
+  // so CHAT_API_KEY falls back to OPENAI_API_KEY rather than demanding the same value be
+  // written into .env twice. Setting it explicitly splits the two.
+  CHAT_API_KEY: parsed.data.CHAT_API_KEY ?? parsed.data.OPENAI_API_KEY,
+  CHAT_BASE_URL: parsed.data.CHAT_BASE_URL ?? parsed.data.OPENAI_BASE_URL,
+};
 
 /**
  * Resolves a relative path against the repository root.

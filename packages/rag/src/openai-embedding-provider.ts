@@ -1,4 +1,5 @@
 import { EmbeddingError, type EmbeddingProvider } from "./embeddings";
+import { redactSecrets } from "./redact";
 
 /**
  * Embeddings over the OpenAI `/v1/embeddings` wire format, via plain `fetch`.
@@ -148,16 +149,4 @@ async function readBodySafely(response: Response): Promise<string> {
   } catch {
     return "<unreadable body>";
   }
-}
-
-/**
- * Replaces anything shaped like an API key. Deliberately broad: it matches the masked
- * forms providers echo back (`sk-or-v1***...73bf`) as well as whole keys, because the
- * cost of over-redacting an error message is a slightly less useful log line and the cost
- * of under-redacting it is a credential in the database.
- */
-function redactSecrets(text: string): string {
-  return text
-    .replace(/\b(sk|pk|rk)-[A-Za-z0-9._*-]{8,}/g, "$1-<redacted>")
-    .replace(/\bBearer\s+[A-Za-z0-9._*-]{8,}/gi, "Bearer <redacted>");
 }

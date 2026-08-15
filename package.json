@@ -22,6 +22,7 @@
     "db:studio": "pnpm --filter @corpus-lens/db run db:studio",
     "ingest": "pnpm --filter @corpus-lens/api run ingest",
     "eval": "pnpm --filter @corpus-lens/api run eval",
+    "ask": "pnpm --filter @corpus-lens/api run ask",
     "clean": "turbo run clean && rm -rf node_modules .turbo"
   },
   "devDependencies": {
