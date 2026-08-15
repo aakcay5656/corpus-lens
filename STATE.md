@@ -3,15 +3,16 @@
 Single source of truth for progress. Claude Code updates this at the end of every
 step, before writing the completion report. Read it at the start of every session.
 
-**Current step:** 4 — Chunking + embeddings
-**Last completed step:** 3 — Shared contracts
-**Last commit:** `12dc838` · Step 3 pending
+**Current step:** 5 — Ingestion pipeline
+**Last completed step:** 4 — Chunking + embeddings
+**Last commit:** `4de1015` · Step 4 pending
 
 | Step | Commit |
 |---|---|
 | 0 — Corpus recon | `a6e1ee9` |
 | 1 — Monorepo scaffold | `12dc838` _(shared with Step 2, see below)_ |
 | 2 — Database schema | `12dc838` |
+| 3 — Shared contracts | `4de1015` |
 
 > **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
 > the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
@@ -35,7 +36,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 1 | Monorepo scaffold | P0 | ✅ done |
 | 2 | Database schema | P0 | ✅ done |
 | 3 | Shared contracts | P0 | ✅ done |
-| 4 | Chunking + embeddings | P0 | ⬜ |
+| 4 | Chunking + embeddings | P0 | ✅ done |
 | 5 | Ingestion pipeline | P0 | ⬜ |
 | 6 | Hybrid retrieval | P0 | ⬜ |
 | 7 | Grounded answering | P0 | ⬜ |
@@ -85,6 +86,14 @@ substantial ones into `docs/ADR.md`.
 | 3 | `POST /ingest` does **not** accept a corpus directory from the client | It would let an authenticated admin walk any directory the API process can read — path traversal dressed up as a feature. The directory comes from `CORPUS_DIR` on the server. |
 | 3 | Auth responses carry no tokens in the body | Access and refresh JWTs travel in httpOnly cookies; returning them in the body hands back exactly what the cookie flag exists to withhold. |
 | 3 | `Citation` carries both `marker` and `sourceIndex` | The server drops citation markers that do not match the supplied context, after which the surviving markers are no longer contiguous. The UI has to resolve what the model actually wrote, not what it should have written. |
+| 4 | Markdown is parsed by a hand-written **line scanner**, not by remark/mdast | The scanner needs to know two things — where headings are and where fenced code is — and a CommonMark AST gets the corpus wrong on exactly the case that matters: the changelogs' 4-space-indented first bullet parses as an indented code block. ~90 lines I can defend beats a parser whose edge cases I would have to work around. |
+| 4 | `gpt-tokenizer` for real BPE counts, not a `words × 1.33` proxy | Both the chunk budget and the embedding batch cap are enforced against the model's real 8191-token input limit and per-request token limit; a proxy that under-counts turns into a 400 from the API on the first non-English or code-heavy corpus. Chosen over `js-tiktoken` (identical counts) because js-tiktoken ships ESM-only *types* against a dual runtime, which the Node16 resolver rejects from a CommonJS package. |
+| 4 | OpenAI embeddings over raw `fetch`, not the `openai` SDK | The deliverable here *is* the failure policy — bounded timeout, one retry, transient-vs-permanent classification. The SDK ships its own retry and timeout defaults, so using it would mean inheriting a policy I did not choose or configuring it off and writing this anyway. |
+| 4 | The offline embedding provider is a **first-class provider** selected by `EMBEDDING_PROVIDER`, not a test mock | It is what lets `clone → install → migrate → ingest → search` work with no API key, which is a scored setup criterion. Being a real provider means tests exercise the same code path production uses, and it carries the *same* input/batch limits so an offline run fails wherever an online one would. |
+| 4 | Batching lives in `embedAll` above the provider interface, and is token-aware | An array-length cap is a guess that works until the corpus contains long documents; counting tokens is cheap next to a round trip. Putting it above the interface means both providers get the same batching and the same over-long-input rejection. |
+| 4 | When sections merge, the shared heading path becomes the breadcrumb and the deeper headings are written back into the body | Otherwise merging a whole document into one chunk silently deletes `## QA findings and fixes` from both the breadcrumb and the text. A heading is either in the breadcrumb or in the content — never dropped. |
+| 4 | The content-budget floor is a **fraction** of the budget (25%), not a constant | The first version used a constant 64, which silently overrode any configured budget below 64 — a caller asking for a small budget got a large one and never found out. Caught by a test that asserted a split and got one chunk. |
+| 4 | Tests are excluded from `tsconfig.json` and type-checked by `tsconfig.test.json` inside the `test` script | Test files must not be emitted into `dist/`, which is a consumed surface, but Vitest transpiles without type-checking — without the second config the tests would be the only unchecked TypeScript in the repository. |
 | 3 | Package builds are `rm -rf dist && tsc -b`, and packages no longer define a `typecheck` script | `tsc -b` leaves output for deleted sources, so a build can pass on artefacts whose source is gone — this actually happened in Step 3. Deleting first makes the build honest; these packages compile in under a second, so incrementality is worth nothing here. `typecheck` was removed because for a composite project `tsc -b` *is* the typecheck, and two tasks running `rm -rf dist` concurrently in one directory would race. |
 
 ---
@@ -94,9 +103,21 @@ substantial ones into `docs/ADR.md`.
 Problems noticed outside the current step. Do not fix them mid-step — record here and
 schedule them.
 
-- **Step 4:** all 6 `changelogs/*.md` indent their first bullet by 4 spaces, which CommonMark
-  parses as an indented code block. The chunker must not drop it and the "never split a code
-  fence" rule must not trip on it. Needs a fixture test.
+- ~~**Step 4:** the changelogs' 4-space-indented first bullet.~~ Done — the parser is a line
+  scanner rather than an AST walk precisely so this is ordinary text, pinned by a fixture test
+  in `markdown-sections.test.ts` and confirmed on the real file.
+- **Step 5:** ingestion must assert `provider.dimensions === EMBEDDING_DIMENSIONS` (from
+  `@corpus-lens/db/schema/chunks`) before writing. `packages/rag` cannot import `packages/db`,
+  so this is the one place both numbers are in scope; without the check a mismatched
+  `EMBEDDING_DIMENSIONS` fails as an opaque Postgres error on the first insert.
+- **Step 5:** the env vars added in Step 4 (`EMBEDDING_PROVIDER`, `EMBEDDING_DIMENSIONS`,
+  `EMBEDDING_MODEL`, `OPENAI_API_KEY`) are in `.env.example` but not yet Zod-validated —
+  `packages/rag` is a library and deliberately does not read `process.env`. The ingest CLI
+  validates them at startup.
+- **Step 5:** `documents.version` and `documents.lifecycle` are still unfilled.
+  `deriveSourceMetadata` covers only what the breadcrumb needs (docType/date/subject);
+  lifecycle comes from the body's first lines (`Status: deprecated since…`) and feeds Step 7's
+  conflict rule.
 - **Step 6:** if the 78 near-duplicate delivery reports crowd out root reference documents on
   general queries (eval `q7`), the lever is a `doc_type` prior in fusion or a search filter —
   **not** a change to chunk size. See `docs/CORPUS.md` §5.
@@ -147,4 +168,11 @@ anything manual.
 - Corpus path: **`./sample_dataset/corpus`** (git-ignored) — note the nesting;
   `sample_dataset/sample_questions.md` sits outside it and must not be ingested
 - Corpus size: 142 Markdown files, ~23.6k tokens. Expected chunk count after Step 5: **~142**
+- Step 4 measured it: the chunker produces **exactly 142 chunks from 142 documents**, one each,
+  min 45 / max 253 tokens including the breadcrumb. The Step 0 prediction held, and a
+  materially different number from `pnpm ingest` means the chunker has a bug.
+- Embeddings default to `EMBEDDING_PROVIDER=deterministic` in `.env.example`, so the system runs
+  with no API key. Set it to `openai` with `OPENAI_API_KEY` for real retrieval quality — never
+  quote evaluation numbers from a deterministic run.
+- rag deps: gpt-tokenizer 3.4.0 (cl100k_base) · vitest 4.1.10
 - API: port 3001 · Web: port 3000 · MCP: port 3002

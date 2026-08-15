@@ -1,0 +1,20 @@
+{
+  // Type-checks the tests, which the build config deliberately excludes so that test
+  // files never reach dist/. Vitest transpiles without checking types, so without this
+  // the test files would be the only unchecked TypeScript in the repository.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "types": ["node"],
+    // The build config pins rootDir to src/ so dist/ stays flat; this config also has to
+    // see vitest.config.ts, which sits above it.
+    "rootDir": "."
+  },
+  // .mts, not .ts: `vitest/config` is ESM-only, and in a CommonJS package the Node16
+  // resolver will not let a .ts file require it. The extension is what marks this one
+  // file as a module.
+  "include": ["src/**/*.ts", "vitest.config.mts"]
+}

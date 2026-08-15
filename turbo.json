@@ -14,7 +14,10 @@
     },
     "test": {
       "dependsOn": ["^build"],
-      "outputs": ["coverage/**"]
+      // No outputs: CLAUDE.md §3 says tests here are not a coverage exercise, so nothing
+      // is written to disk. Leaving "coverage/**" declared made turbo warn on every run,
+      // which reads like a misconfiguration to anyone following the README.
+      "outputs": []
     },
     "dev": {
       "dependsOn": ["^build"],

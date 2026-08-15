@@ -17,6 +17,9 @@
     "tsBuildInfoFile": "dist/.tsbuildinfo"
   },
   "include": ["src/**/*.ts"],
+  // Tests live beside their source but must not be emitted into dist/, which is a
+  // published surface. tsconfig.test.json type-checks them instead.
+  "exclude": ["src/**/*.test.ts"],
   // Deliberately NOT referencing ../db. CLAUDE.md §4: retrieval receives a repository
   // interface so it can be unit-tested without a database.
   "references": [{ "path": "../shared" }]

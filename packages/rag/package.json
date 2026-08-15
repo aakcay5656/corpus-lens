@@ -11,12 +11,15 @@
   },
   "scripts": {
     "build": "rm -rf dist && tsc -b",
+    "test": "tsc -p tsconfig.test.json && vitest run",
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@corpus-lens/shared": "workspace:*"
+    "@corpus-lens/shared": "workspace:*",
+    "gpt-tokenizer": "^3.4.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.10"
   }
 }

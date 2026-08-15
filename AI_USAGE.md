@@ -178,3 +178,72 @@ because each app's `typecheck` depends on the packages being built first.
 **Boundary proofs, run rather than asserted.** Renaming `Role`'s `ADMIN` member fails
 `apps/api` with `TS2322`; renaming `AnswerResponse.answered` fails `apps/web` with `TS2551`.
 That is the Step 3 acceptance criterion demonstrated in both directions rather than claimed.
+
+---
+
+### Step 4 — Chunking + embeddings
+
+- **AI did:** wrote the Markdown line scanner, the three-pass chunker (size split → merge →
+  absorb), the path-metadata deriver and breadcrumb builder, the `EmbeddingProvider`
+  interface with its token-aware batching, the OpenAI provider over raw `fetch`, the offline
+  deterministic provider, and 34 Vitest cases; then ran the chunker over all 142 corpus files.
+- **I wrote/rewrote:** three calls that are architecture rather than code.
+  (1) **A line scanner instead of `remark`.** The instinct was to reach for a Markdown AST.
+  But Step 0 had already measured the trap — every changelog indents its first bullet by four
+  spaces, which CommonMark reads as an indented *code block* — so the "correct" parser is the
+  one that gets this corpus wrong. The scanner needs to know two things, where headings are
+  and where fences are, and that is about ninety lines I can defend.
+  (2) **Raw `fetch` instead of the `openai` SDK.** What is actually being graded here is the
+  failure policy — a bounded timeout, one retry, and a transient-versus-permanent decision.
+  The SDK ships its own retry defaults, so using it would mean either inheriting a policy I
+  did not choose or switching it off and writing this anyway.
+  (3) **The offline provider is a product feature, not a test double.** It is selected by
+  `EMBEDDING_PROVIDER=deterministic` and carries the *same* input and batch limits as the
+  OpenAI one, so an offline run fails wherever an online run would. That is what makes
+  "clone it and watch it work without an API key" true, and it means the tests exercise the
+  same code path production uses instead of a parallel one that quietly rots.
+- **Got it wrong:** the content-budget floor. To stop a pathological breadcrumb from leaving
+  zero room for content, the first version clamped the budget with `Math.max(budget - head,
+  64)`. That silently *overrides* any configured budget below 64: a caller asking for a
+  20-token budget got 64 and was never told. It is the worst kind of bug — a guard that
+  ignores configuration and looks reasonable while doing it.
+- **How I caught it:** a test that fed a 20-token budget and asserted more than one chunk got
+  exactly one. The failure was in the test's expectation only by appearance; reading why the
+  split had not fired led to the constant. The fix makes the floor a *fraction* of the budget
+  (25%), so the rule is "a breadcrumb may not eat more than three quarters of the budget",
+  which holds at every scale instead of only above 64.
+
+**A dependency that had to be swapped after it compiled in Node but not in TypeScript.**
+`js-tiktoken` was the first choice for token counting and worked at runtime, but its package
+declares `"type": "module"` and offers no `types` entry under the `require` condition, so
+TypeScript's Node16 resolver refuses it from a CommonJS package while Node itself loads it
+happily. Replaced with `gpt-tokenizer`, which is dual-published properly and returns identical
+counts (both give 8 for the same probe string). Worth recording because the runtime check
+passed and the build still failed — a package working in `node -e` says nothing about whether
+its types resolve.
+
+**Evidence for the breadcrumb decision, rather than a claim.** Step 0 argued that filename
+metadata in the breadcrumb is the highest-leverage retrieval choice in the case, because the
+78 delivery reports are near-identical prose. Embedding all 142 chunks twice — once with the
+breadcrumb, once without — and querying *"Bubble Bakery December 2025 delivery report"*:
+
+```
+WITH breadcrumb      1. 0.285 delivery-reports/2025-05-bubble-bakery.md
+                     2. 0.272 delivery-reports/2025-07-bubble-bakery.md
+                     … all five results are Bubble Bakery delivery reports
+
+WITHOUT breadcrumb   1. 0.219 meeting-notes/2026-02-09-production-sync.md
+                     2. 0.162 meeting-notes/2025-09-22-production-sync.md
+                     … not one delivery report in the top five
+```
+
+Note the honest part: the *right* month (2025-12) ranks fourth, not first, because "December"
+and "12" share no characters for a lexical embedder. That is precisely the gap the keyword arm
+of RRF and the real embedding model close, and it is worth knowing before Step 6 rather than
+being surprised by it.
+
+**Verified rather than assumed.** The chunker was run over the real corpus, not just fixtures:
+142 documents produce **exactly 142 chunks**, one per document, min 45 and max 253 tokens
+including the breadcrumb. That is the number Step 0 predicted, which is the point of having
+predicted it — a materially different count would have meant a bug. The changelog's
+four-space-indented bullet is present and intact in the emitted chunk.

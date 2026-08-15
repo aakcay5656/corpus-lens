@@ -1,5 +1,5 @@
 import { schema } from "@corpus-lens/db/client";
-import { PACKAGE_NAME as RAG_PACKAGE } from "@corpus-lens/rag/package-info";
+import { DEFAULT_CHUNK_OPTIONS } from "@corpus-lens/rag/chunker";
 import { TOP_K_DEFAULT, TOP_K_MAX } from "@corpus-lens/shared/limits";
 import { type Role } from "@corpus-lens/shared/role";
 import { searchRequestSchema } from "@corpus-lens/shared/search";
@@ -19,7 +19,10 @@ function main(): void {
   // reaching the embedding provider (CLAUDE.md §9).
   const rejected = searchRequestSchema.safeParse({ query: "hello", topK: TOP_K_MAX + 1 });
 
-  console.log(`api scaffold — retrieval will come from ${RAG_PACKAGE}`);
+  console.log(
+    `api scaffold — chunk budget ${DEFAULT_CHUNK_OPTIONS.budgetTokens} tokens, ` +
+      `overlap ${DEFAULT_CHUNK_OPTIONS.overlapTokens}`,
+  );
   console.log(`tables visible from the db package: ${Object.keys(schema).join(", ")}`);
   console.log(`roles: ${adminRole}, default topK ${TOP_K_DEFAULT}, max ${TOP_K_MAX}`);
   console.log(`topK ${TOP_K_MAX + 1} accepted? ${rejected.success}`);
