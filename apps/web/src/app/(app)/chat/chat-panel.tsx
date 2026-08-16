@@ -229,6 +229,16 @@ function AnswerBody({
 
   if (result === null) return null;
 
+  const extractiveNotice =
+    result.answerMode === "extractive" ? (
+      <p className="mb-3 rounded-lg border border-border bg-surface-raised px-3 py-2 text-xs text-muted">
+        <span className="font-medium text-ink">Offline mode.</span> This answer was assembled by
+        selecting sentences from the retrieved passages — no language model was involved. It cannot
+        invent anything, and it also cannot judge whether the passages really answer the question,
+        so it may respond where the full system would decline.
+      </p>
+    ) : null;
+
   /**
    * Abstention as its own state, not a paragraph of hedging.
    *
@@ -238,25 +248,31 @@ function AnswerBody({
    */
   if (!result.answered) {
     return (
-      <div className="rounded-lg border border-warning/40 bg-warning-soft p-3">
-        <p className="text-sm font-medium text-warning">Not in the corpus</p>
-        <p className="mt-1 text-sm text-ink">{result.text}</p>
-        <p className="mt-2 text-xs text-muted">
-          {result.abstainReason === "NO_RELEVANT_CONTEXT"
-            ? "Nothing retrieved scored highly enough to be worth answering from, so the model was not asked."
-            : "Passages were retrieved, but the model judged that they do not contain the answer."}
-        </p>
-      </div>
+      <>
+        {extractiveNotice}
+        <div className="rounded-lg border border-warning/40 bg-warning-soft p-3">
+          <p className="text-sm font-medium text-warning">Not in the corpus</p>
+          <p className="mt-1 text-sm text-ink">{result.text}</p>
+          <p className="mt-2 text-xs text-muted">
+            {result.abstainReason === "NO_RELEVANT_CONTEXT"
+              ? "Nothing retrieved scored highly enough to be worth answering from, so the model was not asked."
+              : "Passages were retrieved, but the model judged that they do not contain the answer."}
+          </p>
+        </div>
+      </>
     );
   }
 
   return (
-    <AnswerText
-      text={result.text}
-      citations={result.citations}
-      onCitationClick={onCitationClick}
-      activeSourceIndex={activeSourceIndex}
-    />
+    <>
+      {extractiveNotice}
+      <AnswerText
+        text={result.text}
+        citations={result.citations}
+        onCitationClick={onCitationClick}
+        activeSourceIndex={activeSourceIndex}
+      />
+    </>
   );
 }
 

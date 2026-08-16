@@ -51,7 +51,7 @@ async function main(): Promise<void> {
   });
 
   const chatProvider = createChatProvider({
-    kind: "openai",
+    kind: ingestEnv.CHAT_PROVIDER,
     model: ingestEnv.CHAT_MODEL,
     apiKey: ingestEnv.CHAT_API_KEY,
     baseUrl: ingestEnv.CHAT_BASE_URL,

@@ -1,6 +1,11 @@
 import { type AnswerResponse } from "@corpus-lens/shared/answer";
 
-import { NO_ANSWER_SENTINEL, SYSTEM_PROMPT, buildUserPrompt } from "./answer-prompt";
+import {
+  NO_ANSWER_SENTINEL,
+  SYSTEM_PROMPT,
+  buildUserPrompt,
+  dropNearDuplicates,
+} from "./answer-prompt";
 import { type ChatProvider } from "./chat-provider";
 import { validateCitations } from "./citations";
 import { DEFAULT_RRF_K } from "./reciprocal-rank-fusion";
@@ -41,8 +46,16 @@ export function minimumFusedScore(
   return 1 / (k + 1) + 1 / (k + candidateCount);
 }
 
-/** Bound on generated length. Answers are a few sentences; this is a cost guard. */
-export const DEFAULT_MAX_OUTPUT_TOKENS = 700;
+/**
+ * Bound on generated length.
+ *
+ * Lowered from 700 after measuring: real answers run 150–250 tokens, and providers
+ * *reserve* against this number rather than merely capping at it — an exhausted balance
+ * refused a request with "you requested up to 700 tokens, but can only afford 178" while
+ * having ample credit for the answer actually produced. 400 leaves room for the longest
+ * enumeration answers in the evaluation set with no observed truncation.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 400;
 
 /** Extraction and citation, not composition — the same inputs should give same output. */
 export const DEFAULT_TEMPERATURE = 0;
@@ -87,16 +100,23 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
       citations: [],
       sources: passages,
       abstainReason: "NO_RELEVANT_CONTEXT",
+      answerMode: input.chatProvider.mode,
       droppedMarkers: [],
       timings: { ...timings, generateMs: null, totalMs: Date.now() - startedAt },
     };
   }
 
+  // Deduplicated once, here, and then used for everything: the prompt, the citation
+  // validation and the sources reported to the client. Numbering the prompt over one list
+  // and validating markers against another would make every citation after a dropped
+  // passage point at the wrong document.
+  const context = dropNearDuplicates(passages);
+
   const generateStartedAt = Date.now();
   const raw = await input.chatProvider.complete({
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: buildUserPrompt(input.question, passages) },
+      { role: "user", content: buildUserPrompt(input.question, context) },
     ],
     maxOutputTokens: input.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
     temperature: input.temperature ?? DEFAULT_TEMPERATURE,
@@ -105,10 +125,13 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
   const generateMs = Date.now() - generateStartedAt;
 
   const finish = (
-    result: Omit<AnswerResult, "question" | "sources" | "timings">,
+    result: Omit<AnswerResult, "question" | "sources" | "timings" | "answerMode">,
   ): AnswerResult => ({
     question: input.question,
-    sources: passages,
+    answerMode: input.chatProvider.mode,
+    // The deduplicated list, so the UI's source numbering matches the markers the model
+    // was given and the citations resolve to what the reader is shown.
+    sources: context,
     timings: { ...timings, generateMs, totalMs: Date.now() - startedAt },
     ...result,
   });
@@ -126,7 +149,7 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
     });
   }
 
-  const validated = validateCitations(raw.trim(), passages);
+  const validated = validateCitations(raw.trim(), context);
 
   return finish({
     answered: true,

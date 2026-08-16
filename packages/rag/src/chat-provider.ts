@@ -30,6 +30,11 @@ export interface ChatRequest {
 export interface ChatProvider {
   readonly model: string;
   /**
+   * Whether this provider reasons or merely selects. Surfaced on the answer so a client
+   * can tell the user which one produced it — see `answerMode` in the shared contract.
+   */
+  readonly mode: "model" | "extractive";
+  /**
    * Returns the complete text. Streams internally when `onToken` is supplied, so the
    * caller gets tokens as they arrive *and* the assembled string — the API needs both:
    * one for the SSE response, one for citation validation and the query log.
@@ -41,8 +46,22 @@ export class ChatError extends Error {
   constructor(
     message: string,
     readonly retryable: boolean,
+    /** HTTP status when the failure came from the provider, absent for transport errors. */
+    readonly status?: number,
   ) {
     super(message);
     this.name = "ChatError";
+  }
+
+  /**
+   * True when the *credential* is the problem rather than the moment.
+   *
+   * 401 (bad key), 402 (no credit) and 403 (forbidden) will fail identically on every
+   * subsequent request until a human intervenes. 429 and 5xx will not, which is why they
+   * are deliberately excluded — falling back permanently because a provider was briefly
+   * busy would abandon the real model over a hiccup.
+   */
+  get isCredentialFailure(): boolean {
+    return this.status === 401 || this.status === 402 || this.status === 403;
   }
 }

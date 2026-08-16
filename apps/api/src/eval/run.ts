@@ -239,7 +239,7 @@ function printComparison(outcomes: Record<Mode, QueryOutcome[]>, topK: number): 
  */
 async function measureAbstention(suite: EvalFile, context: RetrievalContext): Promise<void> {
   const chatProvider = createChatProvider({
-    kind: "openai",
+    kind: ingestEnv.CHAT_PROVIDER,
     model: ingestEnv.CHAT_MODEL,
     apiKey: ingestEnv.CHAT_API_KEY,
     baseUrl: ingestEnv.CHAT_BASE_URL,

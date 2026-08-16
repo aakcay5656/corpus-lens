@@ -57,10 +57,80 @@ export function buildSourcesBlock(passages: Passage[]): string {
     .join("\n\n---\n\n");
 }
 
+/**
+ * Builds the user message.
+ *
+ * Takes the passages **already deduplicated** by the caller rather than deduplicating here.
+ * That is not a style preference: numbering the sources over a different list from the one
+ * the citation validator checks against would make every marker after a dropped passage
+ * resolve to the wrong document — silently, and invisibly in a browser. One list is built
+ * once in `answer.ts` and used for the prompt, the validation and the reported sources.
+ */
 export function buildUserPrompt(question: string, passages: Passage[]): string {
   return `SOURCES
 ${buildSourcesBlock(passages)}
 
 QUESTION
 ${question}`;
+}
+
+/**
+ * Overlap above which a later passage is treated as a repeat of an earlier one, measured
+ * as shared distinct words over the smaller passage.
+ *
+ * 0.8 rather than something looser: the point is to drop passages that say the *same
+ * thing*, not passages about the same topic. Two delivery reports for different games
+ * share their template but differ in every finding, and land around 0.5–0.6.
+ */
+const DUPLICATE_OVERLAP = 0.8;
+
+/**
+ * Removes passages that repeat one already in the context.
+ *
+ * This corpus is the reason. 78 of its 142 documents are assembled from 15 distinct
+ * sentences (docs/CORPUS.md §3.2), so a query landing in that cluster retrieves six
+ * passages carrying perhaps two passages' worth of information. Measured on the December
+ * Merge Marina question, six retrieved passages contained **six** near-duplicate pairs and
+ * cost 1,808 input tokens.
+ *
+ * Dropping them is not a quality trade. A model shown the same claim three times learns
+ * nothing on the second and third, and a citation pointing at an interchangeable duplicate
+ * is not more verifiable than one pointing at the original. What it saves is real money on
+ * every request.
+ *
+ * Order is preserved and the *first* occurrence is kept, which is the highest-ranked one —
+ * so the surviving citation is the passage retrieval liked best.
+ */
+export function dropNearDuplicates(passages: Passage[]): Passage[] {
+  const kept: { passage: Passage; words: Set<string> }[] = [];
+
+  for (const passage of passages) {
+    const words = distinctWords(passage.content);
+    const isRepeat = kept.some(
+      (existing) => overlapRatio(words, existing.words) >= DUPLICATE_OVERLAP,
+    );
+    if (!isRepeat) kept.push({ passage, words });
+  }
+
+  return kept.map((entry) => entry.passage);
+}
+
+function distinctWords(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}._-]+/u)
+      .filter((word) => word.length > 2),
+  );
+}
+
+/** Shared words over the smaller set, so a short passage inside a long one still counts. */
+function overlapRatio(a: Set<string>, b: Set<string>): number {
+  const smaller = a.size <= b.size ? a : b;
+  const larger = smaller === a ? b : a;
+  if (smaller.size === 0) return 0;
+
+  let shared = 0;
+  for (const word of smaller) if (larger.has(word)) shared += 1;
+  return shared / smaller.size;
 }

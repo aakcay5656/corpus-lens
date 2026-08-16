@@ -36,6 +36,7 @@ export function createOpenAiChatProvider(config: OpenAiChatConfig): ChatProvider
 
   return {
     model: config.model,
+    mode: "model" as const,
 
     async complete(request: ChatRequest): Promise<string> {
       try {
@@ -82,7 +83,11 @@ async function requestCompletion(
   if (!response.ok) {
     const body = await readBodySafely(response);
     const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
-    throw new ChatError(`chat request failed with ${response.status}: ${body}`, retryable);
+    throw new ChatError(
+      `chat request failed with ${response.status}: ${body}`,
+      retryable,
+      response.status,
+    );
   }
 
   if (response.body === null) throw new ChatError("chat response had no body", false);

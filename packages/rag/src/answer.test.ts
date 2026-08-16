@@ -12,7 +12,16 @@ const wordCounter: TokenCounter = {
 };
 const embeddingProvider = createDeterministicEmbeddingProvider({ dimensions: 32 });
 
-function chunk(index: number): RetrievedChunk {
+const DISTINCT_CONTENT = [
+  "AppLovin playables ship as a single self-contained HTML file, maximum five megabytes.",
+  "Korean line breaks split mid-word on the end card; locale-aware wrapping was enabled.",
+  "Audio is built in a dedicated pass because the unified compression path regressed sizes.",
+  "Delivery review is run by a developer outside the pod, never the author of the build.",
+  "Every playable ships with seven languages and falls back to English when one is missing.",
+  "The verify stage measures the final inlined artifact rather than the pre-inline bundle.",
+];
+
+function chunk(index: number, content?: string): RetrievedChunk {
   return {
     chunkId: `00000000-0000-4000-8000-00000000000${index}`,
     documentId: `10000000-0000-4000-8000-00000000000${index}`,
@@ -20,7 +29,10 @@ function chunk(index: number): RetrievedChunk {
     sourcePath: `doc-${index}.md`,
     docType: "reference",
     breadcrumb: `Document ${index} [reference]`,
-    content: `The AppLovin limit is 5 MB. Fact ${index}.`,
+    // Genuinely distinct wording per chunk. The near-duplicate suppression in the prompt
+    // builder is real, so fixtures that differ only by a digit get collapsed — which is
+    // correct behaviour and would otherwise look like a bug in these tests.
+    content: content ?? DISTINCT_CONTENT[index % DISTINCT_CONTENT.length],
     ordinal: 0,
     rawScore: 0.8,
   };
@@ -195,6 +207,66 @@ describe("answerQuestion", () => {
     });
 
     expect(tokens.join("")).toBe("Answer [1].");
+  });
+});
+
+describe("near-duplicate suppression", () => {
+  /**
+   * The bug this pins was live for about a minute while being written: deduplicating the
+   * passages for the *prompt* while validating markers against the *original* list makes
+   * every citation after a dropped passage resolve to the wrong document — silently, and
+   * invisibly in a browser. One list, used for the prompt, the validation and the sources.
+   */
+  it("keeps markers, sources and citations aligned after dropping a duplicate", async () => {
+    const original = "Orientation switch during the fail popup misplaced the retry button.";
+    const chunks = [
+      chunk(1, original),
+      chunk(2, `${original} `), // a repeat of source 1
+      chunk(3, "Korean line breaks split mid-word on the end card; locale-aware wrapping."),
+    ];
+
+    // The model cites source 2 — which, after deduplication, is the *third* chunk.
+    const provider = stubProvider("Line breaking was fixed [2].");
+    const result = await ask(agreeingRepository(chunks), provider);
+
+    expect(result.sources).toHaveLength(2);
+    expect(result.sources.map((source) => source.sourcePath)).toEqual(["doc-1.md", "doc-3.md"]);
+
+    const [citation] = result.citations;
+    expect(citation?.marker).toBe(2);
+    expect(citation?.sourcePath).toBe("doc-3.md");
+    // The reported sources are what the marker indexes into.
+    expect(result.sources[citation?.sourceIndex ?? -1]?.sourcePath).toBe(citation?.sourcePath);
+  });
+
+  it("shows the model only one copy of a repeated passage", async () => {
+    const repeated = "Cta contrast fell below 4.5:1 on the client's light background.";
+    const provider = stubProvider("Answer [1].");
+
+    await ask(
+      agreeingRepository([chunk(1, repeated), chunk(2, repeated), chunk(3, repeated)]),
+      provider,
+    );
+
+    const user = provider.calls[0]?.[1]?.content ?? "";
+    // Three identical passages retrieved, one sent — the corpus's 78 near-identical
+    // delivery reports are exactly this case, and repeating a claim teaches nothing.
+    expect(user.match(/^\[\d+\]/gm)).toHaveLength(1);
+  });
+
+  it("keeps passages that merely share a topic", async () => {
+    const provider = stubProvider("Answer [1][2].");
+
+    const result = await ask(
+      agreeingRepository([
+        chunk(1, "Haptics fired on every match on ios which the client found excessive."),
+        chunk(2, "Memory grew slightly after repeated loops due to retained particle pools."),
+      ]),
+      provider,
+    );
+
+    // Both are QA findings in the same template; neither repeats the other.
+    expect(result.sources).toHaveLength(2);
   });
 });
 

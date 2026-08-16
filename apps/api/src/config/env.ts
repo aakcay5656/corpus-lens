@@ -7,7 +7,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 // for a missing database URL that `pnpm db:migrate` gives.
 import { env as databaseEnv } from "@corpus-lens/db/env";
 import { EMBEDDING_DIMENSIONS } from "@corpus-lens/db/schema/chunks";
-import { DEFAULT_CHAT_MODEL } from "@corpus-lens/rag/chat-provider-factory";
+import { CHAT_PROVIDER_KINDS, DEFAULT_CHAT_MODEL } from "@corpus-lens/rag/chat-provider-factory";
 import {
   DEFAULT_EMBEDDING_MODEL,
   EMBEDDING_PROVIDER_KINDS,
@@ -44,6 +44,11 @@ const ingestEnvSchema = z.object({
   // Generation. Separate from the embedding settings because the two are genuinely
   // independent choices: search and the dashboard work with no chat model at all, and a
   // deployment may reasonably embed locally while generating through a hosted API.
+  // `auto` (default) uses the hosted model when the credential works and the offline
+  // answerer when it does not — deciding by attempting, so a balance running out
+  // mid-session degrades instead of failing. `openai` and `extractive` pin one or the
+  // other. Whichever answers is reported on the response as `answerMode`.
+  CHAT_PROVIDER: z.enum(CHAT_PROVIDER_KINDS).default("auto"),
   CHAT_MODEL: z.string().min(1).default(DEFAULT_CHAT_MODEL),
   CHAT_BASE_URL: z.url().optional(),
   CHAT_API_KEY: z.string().optional(),

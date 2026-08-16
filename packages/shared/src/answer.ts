@@ -71,6 +71,19 @@ export const answerResponseSchema = z.object({
 
   abstainReason: abstainReasonSchema.nullable(),
 
+  /**
+   * Which answerer produced this.
+   *
+   * On the wire rather than inferred from configuration, because it changes how much the
+   * answer can be trusted and the client must not have to guess. `extractive` selects
+   * sentences from the retrieved passages with no language model involved: it cannot
+   * hallucinate, but it also cannot judge whether the passages actually answer the
+   * question — measured across the 16 labelled evaluation queries, no lexical threshold
+   * separates "the corpus contains the answer" from "the corpus contains the words". So in
+   * that mode the second abstention layer is absent and the UI has to say so.
+   */
+  answerMode: z.enum(["model", "extractive"]),
+
   timings: answerTimingsSchema,
 });
 
