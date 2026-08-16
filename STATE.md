@@ -4,9 +4,8 @@ Single source of truth for progress. Claude Code updates this at the end of ever
 step, before writing the completion report. Read it at the start of every session.
 
 **Current step:** 19 — polish (partially done); 18 (deployment) not attempted
-**Last completed step:** 19b — security review fixes (MCP role enforcement, MCP and login
-rate limits)
-**Last commit:** `464610e` · Step 19b pending
+**Last completed step:** 19c — query rewriting for the vector arm
+**Last commit:** `8fe5ddc` · Step 19c pending
 
 | Step | Commit |
 |---|---|
@@ -29,6 +28,7 @@ rate limits)
 | 16 — Evaluation harness | `4554311` |
 | 17 — OIDC for MCP | `977837e` |
 | 19a — offline answering, cost, logo | `7cffb26` `9b2c49f` `5ce880a` `464610e` |
+| 19b — security review fixes | `8fe5ddc` |
 
 > **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
 > the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
@@ -80,6 +80,10 @@ substantial ones into `docs/ADR.md`.
 
 | Step | Decision | Reason |
 |---|---|---|
+| 19c | The vector arm embeds a **rewritten** query (majority terms dropped); the keyword arm gets the question as asked | `ts_rank` discounts a common term already, an embedding cannot. Rewriting both arms scores better on q7 and destroys q9, where "delivery review" is the name of the process being asked about — no frequency statistic separates a document-class reference from a common proper noun, so the arm that can afford the terms keeps them. |
+| 19c | The threshold is "more than half the documents", not a tuned value | A term in a majority cannot narrow the corpus below half, so as a discriminator it has already failed. The number is where the property stops holding. |
+| 19c | Conjunction splitting was measured and **rejected** | It makes q7 *worse* (fused rank 34 vs — baseline): RRF is a vote, and each noisy sub-query contributes two more ranked lists that share the same bias. |
+| 19c | `countTermDocuments` is a repository method, not a computation in `packages/rag` | Document frequency is a property of the indexed corpus, which that package deliberately cannot read (CLAUDE.md §4). |
 | 19b | `get_document` is registered on the MCP server **only for an ADMIN caller** | The tool returns a document's whole text, which the API restricts to admins on `GET /documents/:id`. The caller was authenticated and then ignored, so a `USER` could read through MCP exactly what the API answers with 403. Registering per role means the tool is *absent* from `tools/list`, not present-and-refusing; the handler re-checks so a later refactor cannot reopen it. |
 | 19b | The MCP rate limit is keyed on the **caller id**, not the IP | The caller is authenticated before the limit is consulted, so identity is available and is the better key: one account behind a shared NAT is one budget, and evading it costs an account rather than an address. 60/min rather than the API's 30 because MCP makes several requests per user action. |
 | 19b | `/auth/login` and `/auth/register` get a 10/min throttle of their own | The global 120/min is a working online brute force against a known email. Constant-time verification and one error message already closed enumeration; this closes the rate. Keyed on IP, so a distributed attacker still gets 10 per address — closing *that* needs account lockout, which is its own denial of service (ADR-018). |
@@ -376,6 +380,9 @@ anything manual.
 - Endpoints: `POST /search` and `POST /answer` (any authenticated role) · `GET /documents`,
   `GET /documents/:id`, `POST /ingest`, `GET /ingest/runs`, `GET /ingest/runs/:id`, `GET /stats`
   (ADMIN only) · OpenAPI at `/docs`, JSON at `/docs-json` (13 paths, 14 Zod-derived schemas).
+- Retrieval: hybrid recall@6 **1.000**, MRR 0.721, all-expected-found **1.000** over 13
+  answerable queries (was 0.923 / 0.737 / 0.923 before the vector-arm rewrite). All 13 pass;
+  `pnpm eval` exits 0.
 - Rate limits: global 120/min; `/search` 30/min; `/answer` 10/min; `/auth/login` and
   `/auth/register` 10/min; MCP endpoint 60/min **per caller id**. All in-memory, per instance.
 - MCP tools by role: `search_corpus` for any authenticated caller, `get_document` for ADMIN

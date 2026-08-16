@@ -1,6 +1,8 @@
 import { type Passage, type SearchTimings } from "@corpus-lens/shared/search";
 
 import { embedAll, type EmbeddingProvider } from "./embeddings";
+import { splitQueryTerms } from "./keyword-query";
+import { rewriteForVectorArm, type TermDocumentCounts } from "./query-rewrite";
 import { reciprocalRankFusion, type FusedEntry } from "./reciprocal-rank-fusion";
 import { type TokenCounter } from "./tokenizer";
 
@@ -54,6 +56,15 @@ export interface RetrievalRepository {
     limit: number,
     filters: RetrievalFilters,
   ): Promise<RetrievedChunk[]>;
+
+  /**
+   * How many documents contain each term, and how many documents there are.
+   *
+   * Feeds the vector-arm rewrite in `query-rewrite.ts`. It is a repository method rather
+   * than a number computed here because document frequency is a property of the indexed
+   * corpus, and this package deliberately cannot read the corpus (CLAUDE.md §4).
+   */
+  countTermDocuments(terms: string[]): Promise<TermDocumentCounts>;
 }
 
 /**
@@ -79,6 +90,13 @@ export interface RetrieveInput {
 export interface RetrievalResult {
   passages: Passage[];
   timings: SearchTimings;
+  /**
+   * The text that was actually embedded, and the terms removed from it. Equal to the
+   * question with an empty list when nothing was dropped. Reported so a surprising result
+   * can be explained without re-running anything — a rewrite that fires unexpectedly is
+   * otherwise invisible.
+   */
+  vectorQuery: { text: string; droppedTerms: string[] };
 }
 
 export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
@@ -86,8 +104,19 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   const candidateCount = input.candidateCount ?? DEFAULT_CANDIDATE_COUNT;
   const filters = input.filters ?? {};
 
+  // One extra round trip before the embedding call, because the rewrite decides what to
+  // embed. It is a single indexed aggregate over the query's own terms, and it buys the
+  // vector arm the discounting that `ts_rank` gives the keyword arm for free — see
+  // query-rewrite.ts. Counted in `retrieveMs` with the two arms, since all three are
+  // repository work.
+  const lookupStartedAt = Date.now();
+  const counts = await input.repository.countTermDocuments(splitQueryTerms(input.query));
+  const lookupMs = Date.now() - lookupStartedAt;
+
+  const rewrite = rewriteForVectorArm(input.query, counts);
+
   const embedStartedAt = Date.now();
-  const [embedding] = await embedAll(input.embeddingProvider, [input.query], input.tokenCounter);
+  const [embedding] = await embedAll(input.embeddingProvider, [rewrite.text], input.tokenCounter);
   const embedMs = Date.now() - embedStartedAt;
 
   if (embedding === undefined) {
@@ -97,11 +126,15 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   const retrieveStartedAt = Date.now();
   // In parallel, not in sequence: the arms are independent, they hit different indexes,
   // and running them one after the other would make every search pay both latencies.
+  //
+  // The arms get *different text*, deliberately: the rewritten query to the embedding, the
+  // question as asked to the keyword arm, which already discounts common terms and would
+  // lose a decisive proper noun if they were stripped.
   const [vectorHits, keywordHits] = await Promise.all([
     input.repository.searchByVector(embedding, candidateCount, filters),
     input.repository.searchByKeyword(input.query, candidateCount, filters),
   ]);
-  const retrieveMs = Date.now() - retrieveStartedAt;
+  const retrieveMs = Date.now() - retrieveStartedAt + lookupMs;
 
   const byId = new Map<string, RetrievedChunk>();
   for (const chunk of [...vectorHits, ...keywordHits]) {
@@ -123,6 +156,7 @@ export async function retrieve(input: RetrieveInput): Promise<RetrievalResult> {
   return {
     passages,
     timings: { embedMs, retrieveMs, totalMs: Date.now() - startedAt },
+    vectorQuery: { text: rewrite.text, droppedTerms: rewrite.droppedTerms },
   };
 }
 

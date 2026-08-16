@@ -110,7 +110,7 @@ not the other way round.
 | MCP | `@modelcontextprotocol/sdk`, Streamable HTTP | Official SDK; HTTP is the transport that can carry a credential |
 | Auth | JWT access + rotating refresh, argon2id, httpOnly cookies | No third-party dependency to explain; reuse detection is demonstrable |
 | Validation | Zod in `packages/shared` | One definition is the contract, the runtime validator and the type |
-| Tests | Vitest | 118 tests: chunking, RRF, citations, abstention, ingestion, auth |
+| Tests | Vitest | 170 tests: chunking, RRF, query rewriting, citations, abstention, ingestion, auth, MCP roles |
 
 ---
 
@@ -396,6 +396,14 @@ Measured: embedding all 142 chunks with and without the breadcrumb and querying 
 Bakery December 2025 delivery report"* — with it, all five top hits are Bubble Bakery
 delivery reports; without it, **not one delivery report is in the top five**.
 
+### Query rewriting, asymmetric by arm
+
+The vector arm is embedded on the question with majority terms removed; the keyword arm gets
+the question as asked. `ts_rank` discounts a common term already and an embedding cannot, so
+this gives the vector arm the one thing it lacks without taking from the arm that needs the
+literal words. Measured, with the rejected alternatives, under
+[evaluation](#query-rewriting-for-the-vector-arm).
+
 ### Hybrid retrieval with RRF
 
 Vector similarity (cosine, HNSW) and Postgres full-text search (`ts_rank`, GIN), 20
@@ -507,9 +515,14 @@ exists only to be benchmarked.
 
 | Mode | recall@6 | MRR | all expected found |
 |---|---:|---:|---:|
-| **hybrid** | **0.923** | 0.737 | **0.923** |
-| vector-only | 0.846 | 0.612 | 0.846 |
-| keyword-only | **0.923** | **0.833** | **0.923** |
+| **hybrid** | **1.000** | 0.721 | **1.000** |
+| vector-only | 0.846 | 0.577 | 0.846 |
+| keyword-only | 0.923 | **0.833** | 0.923 |
+
+Before the vector-arm rewrite ([below](#query-rewriting-for-the-vector-arm)) this table read
+hybrid 0.923 / 0.737, vector 0.846 / 0.612, keyword unchanged. The rewrite bought recall and
+cost a little MRR, which is the trade it was accepted for: a document that never enters the
+top 6 cannot be cited, a document at rank 2 instead of rank 1 can.
 
 **This table does not say what I expected it to say, and it is more useful for that.**
 
@@ -546,10 +559,10 @@ to a sample.
 | q3 audio in a separate pass | 2 | 3 | 1 | |
 | q4 March 2026 rejections | 1 | 1 | 1 | |
 | q5 minimum languages | 1 | 1 | 1 | |
-| q6 December Merge Marina | 4 | 5 | 3 | near-duplicate probe |
-| **q7 CTA contrast rule** | **—** | **—** | **—** | multi-intent; see below |
+| q6 December Merge Marina | 3 | 4 | 3 | near-duplicate probe |
+| **q7 CTA contrast rule** | **5** | **1** | — | fixed by the rewrite; see below |
 | q8 Meta vs Unity limits | 1 | 1 | 1 | |
-| q9 delivery review owner | 1 | 1 | 1 | |
+| q9 delivery review owner | 2 | — | 1 | the rewrite's cost; see below |
 | q13 `MRAID` | 1 | 6 | 1 | rare literal token |
 | q14 `loop_complete` | 3 | **—** | 1 | rare literal token |
 | q15 audio paraphrase | 2 | 4 | 1 | |
@@ -557,17 +570,54 @@ to a sample.
 
 **All five shipped dataset queries return their expected document at rank 1.**
 
-q7 is a query I wrote myself and it fails for a diagnosable reason. Asked *"Why does a
-low-contrast CTA keep coming up in delivery reports, and what is the rule?"*, the phrase
-"delivery reports" activates the 78-document cluster in **both** arms — all 40 candidates
-come back as delivery reports and `style-guide-ui.md` sits at vector rank 69, keyword rank
-86. The same document ranks **1st in both arms** for "What is the CTA contrast rule?". It is
-a multi-intent query, and the fix is query decomposition or reranking, both listed under
-[next steps](#known-limitations).
+### Query rewriting for the vector arm
+
+q7 is a query I wrote myself, and until recently it failed. Asked *"Why does a low-contrast
+CTA keep coming up in delivery reports, and what is the rule?"*, the phrase "delivery
+reports" activated the 78-document cluster in **both** arms — all 40 candidates came back as
+delivery reports and `style-guide-ui.md` sat at vector rank 69, keyword rank 86. The same
+document ranked **1st in both arms** for "What is the CTA contrast rule?".
+
+The fix is one asymmetry: **the vector arm gets the query with majority terms removed; the
+keyword arm gets the question as asked.** `ts_rank` already discounts a common term — that
+is what inverse document frequency does — while an embedding has no such mechanism, so
+every word moves the vector and a phrase naming a large document class moves it into the
+middle of that class. Here the stem `deliveri` is in 89% of documents and `report` in 56%.
+Drop them from the embedded text and the style guide is **rank 1** in the vector arm.
+
+"Majority" is not a tuned number: a term in more than half the documents cannot narrow the
+corpus below half, so as a discriminator it has already failed.
+
+**Four strategies were measured; three were rejected.**
+
+| Strategy | q7 fused rank |
+|---|:--:|
+| baseline | — |
+| split on the conjunction, fuse all sub-queries | 34 |
+| rewrite, fuse rewritten *and* original | 15 |
+| rewrite **both** arms | 2, but breaks q9 |
+| **rewrite the vector arm only** | **5** |
+
+Splitting on "and" makes it *worse*: each noisy sub-query contributes two more ranked lists
+of delivery reports, and RRF is a vote. Rewriting both arms fixes q7 and destroys q9 — "Who
+runs the delivery review…", where "delivery review" is the name of the process being asked
+about and the keyword arm was finding it at rank 1 on exactly those words. **No frequency
+statistic separates a document-class reference from a common proper noun**, so the arm that
+can afford the terms keeps them.
+
+The cost is visible in the table: q9 moves from hybrid rank 1 to rank 2, and the vector arm
+loses it entirely. Recall is what was bought — a document outside the top 6 cannot be cited
+at all, while a document at rank 2 can.
+
+It costs one extra database round trip before the embedding call. Measured on the running
+API, the whole repository stage (term counts + both arms) is 13–36 ms against a ~350 ms
+embedding call.
 
 Worth recording: `docs/CORPUS.md` predicted this crowding *and* pre-committed to a
 `doc_type` prior as the remedy. Measured, that would not have worked — the style guide never
-reaches fusion, so no fusion-stage rule can promote it. The prior was not added.
+reaches fusion, so no fusion-stage rule can promote it. The prior was not added, and the
+answer turned out to be one stage earlier than anyone proposed: not how candidates are
+ranked, but what is asked for.
 
 ### Abstention
 
@@ -610,6 +660,7 @@ table.
 - [x] OpenAPI generated from the Zod contracts
 - [x] Rate limiting
 - [x] Evaluation harness: recall@k, MRR and a vector / keyword / hybrid comparison
+- [x] **Bonus** — query rewriting: majority terms dropped from the vector arm only
 - [x] **Bonus** — offline embedding provider: the whole system runs with no API key
 - [x] **Bonus** — configurable provider base URL (OpenRouter / Azure / self-hosted)
 - [x] **Bonus** — extractive offline answerer with automatic fallback, so the *whole*
@@ -647,8 +698,13 @@ Nothing here is deployed. What it would take:
 Honest list. Each of these is a decision, not an oversight.
 
 **Retrieval**
-- Multi-intent questions retrieve for whichever intent dominates the vocabulary (see q7).
-  Query decomposition or LLM reranking of the fused top 20 is the fix.
+- The vector-arm rewrite is a *frequency* rule, so it cannot tell a document-class reference
+  from a common proper noun — it only avoids the mistake by leaving the keyword arm alone.
+  A query whose decisive term is common **and** which the keyword arm cannot resolve would
+  still fail; none of the 16 evaluation queries is one, which means the limit is unmeasured
+  rather than absent.
+- Term frequencies are read per query. Correct as the corpus changes, and one extra round
+  trip. Caching them would need invalidation on every ingestion run.
 - HNSW is left at its defaults. With 142 chunks, tuning numbers that cannot be measured at
   this scale would be theatre.
 - Chunk parameters are deliberately *not* fitted to this corpus.
@@ -681,11 +737,12 @@ Honest list. Each of these is a decision, not an oversight.
 
 ### What I would do next, in order
 
-1. **Query decomposition** for multi-intent questions — the one measured retrieval failure.
-2. **A file watcher** on the corpus directory; the hash-based classification already exists.
-3. **Reranking** the fused top 20 with a cross-encoder or the LLM.
-4. **Conversation history** in chat, with the previous turn folded into retrieval.
-5. **A live deployment**, which is the only remaining bonus not attempted.
+1. **Reranking** the fused top 20 with a cross-encoder or the LLM — the remaining lever on
+   MRR, where hybrid still trails keyword-only.
+2. **A conversation-aware rewrite**, which is the version of query rewriting this one is
+   not: resolving "it" and "that rule" against the previous turn needs a model, and the
+   frequency rule shipped here deliberately needs nothing.
+3. **A live deployment**, which is the only remaining bonus not attempted.
 
 ---
 

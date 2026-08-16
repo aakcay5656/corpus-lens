@@ -364,3 +364,35 @@ exhausted API balance, not a bug.
   get_document not found"; the 61st MCP request in a minute returns 429 with `Retry-After` while
   a different caller is unaffected; the 11th wrong password returns 429 in the standard error
   envelope.
+
+### Step 19c — Query rewriting for the vector arm (bonus)
+
+- **Me:** required that the strategy be picked by measurement, not chosen and then justified.
+  A throwaway probe measured four candidates against the query that had been failing since
+  Step 16 before any of them was written into the retriever, and it changed the answer twice.
+- **Rejected on measurement — the obvious idea, which is worse than nothing:** splitting the
+  question on its conjunction and fusing the sub-queries takes q7 from "not found" to **fused
+  rank 34**. RRF is a *vote*, and each noisy sub-query contributes two more ranked lists with
+  the same bias. "More retrieval views can only help" is wrong when the views share a blind
+  spot — I would have shipped this on intuition.
+- **Rejected on measurement — the version that scores best:** rewriting *both* arms puts q7 at
+  rank 2 and destroys q9, where "delivery review" is the name of the process being asked
+  about (vector 1 → 9, keyword 1 → nothing). Chose the asymmetric version, which is worse on
+  the headline query and does not break anything.
+- **The design, in one line:** `ts_rank` already discounts a term that appears everywhere,
+  an embedding cannot — so the vector arm gets the query with majority terms removed and the
+  keyword arm gets the question as asked.
+- **Bug (mine):** first version of the term-frequency SQL passed a JS array straight into the
+  Drizzle template, which expands it into one placeholder per element and produces
+  `unnest(($1, $2, …)::text[])` — a row constructor cast to an array, which Postgres rejects.
+  Fixed with `sql.param`. Found by running `pnpm eval`, not by the build.
+- **Bug:** a backtick inside the SQL comment terminated the enclosing template literal, and the
+  emitted JavaScript was syntactically broken in a way that pointed at the *comment* rather
+  than the cause.
+- **Bug:** the working query printed ten `NOTICE: text-search query contains only stop words`
+  lines per search — `plainto_tsquery` emits one per stop word. Fixed by filtering stop words in
+  a `MATERIALIZED` CTE; without `MATERIALIZED` the planner inlines the filter and the notices
+  come back.
+- **Result, with its cost:** hybrid recall@6 0.923 → **1.000**, all-expected 0.923 → **1.000**,
+  and **MRR 0.737 → 0.721** — q9 lands at rank 2 instead of 1. Published with the regression
+  visible in the per-query table rather than reported as a clean win.

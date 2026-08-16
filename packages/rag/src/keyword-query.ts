@@ -29,15 +29,25 @@
  * there is no query-injection surface even though the terms come from a user.
  */
 export function toKeywordQuery(query: string): string {
-  const terms = query
-    .toLowerCase()
-    // Split on anything that is not a letter, digit, or an intra-word `.`, `_` or `-`, so
-    // "low-contrast", "lumen.track" and "4.5" survive as single searchable terms.
-    .split(/[^\p{L}\p{N}._-]+/u)
-    .map((term) => term.replace(/^[-._]+|[-._]+$/g, ""))
-    .filter((term) => term.length > 0 && !OPERATOR_WORDS.has(term));
+  return splitQueryTerms(query).join(" or ");
+}
 
-  return terms.join(" or ");
+/**
+ * The query's searchable terms, lower-cased, in order.
+ *
+ * Exported because `query-rewrite.ts` has to ask about the *same* tokens this arm searches
+ * for — a rewrite that split words differently would drop a term the keyword arm never had.
+ */
+export function splitQueryTerms(query: string): string[] {
+  return (
+    query
+      .toLowerCase()
+      // Split on anything that is not a letter, digit, or an intra-word `.`, `_` or `-`, so
+      // "low-contrast", "lumen.track" and "4.5" survive as single searchable terms.
+      .split(/[^\p{L}\p{N}._-]+/u)
+      .map((term) => term.replace(/^[-._]+|[-._]+$/g, ""))
+      .filter((term) => term.length > 0 && !OPERATOR_WORDS.has(term))
+  );
 }
 
 /**

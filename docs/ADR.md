@@ -571,3 +571,58 @@ channel) is a feature, not a line of code. Bounded and named here rather than ha
 each keep their own counter, so the effective limit multiplies by replica count. The fix is
 a shared store, which CLAUDE.md §3 rules out for this build; it is listed under known
 limitations in the README rather than pretended away.
+
+---
+
+## ADR-019 — The vector arm searches a rewritten query; the keyword arm does not
+
+**Decision.** Before embedding, drop from the query every term that appears in more than
+half the corpus's documents. The keyword arm receives the question unchanged.
+
+**Rejected.** Splitting the question on its conjunction and fusing the sub-queries;
+fusing the rewritten query together with the original; applying the rewrite to both arms;
+and leaving the failure documented as a known limitation.
+
+**The failure being fixed.** *"Why does a low-contrast CTA keep coming up in delivery
+reports, and what is the rule?"* returned no copy of `style-guide-ui.md` in either arm's top
+20 — vector rank 69, keyword rank 86 — because "delivery reports" names a class of 78
+near-identical documents and pulls the whole candidate set into it. The same document is
+rank 1 in both arms for "What is the CTA contrast rule?".
+
+**Why asymmetric.** `ts_rank` already discounts a term that appears everywhere; that is
+what inverse document frequency is for. An embedding has no such mechanism — every word in
+the text moves the vector, and a phrase naming a large document class moves it to the
+centroid of that class. The rewrite gives the vector arm the discounting it lacks, and the
+keyword arm keeps the literal words that make a rare term decisive.
+
+**Measured, in order.** Fused rank of the target for q7: baseline —; conjunction split and
+fuse **34**; rewrite fused with the original **15**; rewrite both arms **2**; rewrite the
+vector arm only **5**.
+
+Two of those results are the interesting ones. Splitting on "and" makes the query *worse*,
+because RRF is a vote and each noisy sub-query contributes two more ranked lists of delivery
+reports — the intuition that "more retrieval views can only help" is wrong when the views
+share a bias. And rewriting both arms scores best on q7 while destroying q9, "Who runs the
+delivery review, and can it be someone from the same pod?", where "delivery review" is the
+name of the process being asked about: vector 1 → 9, keyword 1 → nothing.
+
+**The generalisation this refuses to make.** No frequency statistic separates a
+document-class reference from a proper noun that happens to be common — the same shape as
+ADR-016, where no lexical threshold separated an answerable question from an unanswerable
+one. Rather than tune a rule that cannot exist, the decision is structural: the arm that can
+afford the common terms keeps them.
+
+**Why "a majority" and not a tuned threshold.** A term present in more than half the
+documents cannot narrow the corpus below half, so as a discriminator it has already failed.
+The number is where the property stops holding, not where the score peaked.
+
+**Consequence, including the cost.** Hybrid recall@6 goes 0.923 → **1.000** and all-expected
+0.923 → **1.000**; MRR goes 0.737 → 0.721, because q9 lands at hybrid rank 2 instead of 1.
+Recall is the metric worth buying: a document outside the top 6 is not in the answer context
+at all, while a document at rank 2 is. One extra round trip is added before the embedding
+call; measured on the running API the whole repository stage is 13–36 ms against a ~350 ms
+embedding call.
+
+The rewritten text and the dropped terms are returned on the retrieval result, so a
+surprising ranking can be explained without re-running anything — a query rewrite that fires
+unexpectedly is otherwise invisible.

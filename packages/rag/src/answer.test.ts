@@ -43,14 +43,19 @@ function agreeingRepository(chunks: RetrievedChunk[]): RetrievalRepository {
   return {
     searchByVector: () => Promise.resolve(chunks),
     searchByKeyword: () => Promise.resolve(chunks),
+    countTermDocuments: () => Promise.resolve(NO_COMMON_TERMS),
   };
 }
+
+/** No term is common enough to be dropped, so the vector-arm rewrite stays out of the way. */
+const NO_COMMON_TERMS = { totalDocuments: 100, byTerm: new Map<string, number>() };
 
 /** Only the vector arm returns anything, so the best score is exactly 1/(k+1). */
 function singleArmRepository(chunks: RetrievedChunk[]): RetrievalRepository {
   return {
     searchByVector: () => Promise.resolve(chunks),
     searchByKeyword: () => Promise.resolve([]),
+    countTermDocuments: () => Promise.resolve(NO_COMMON_TERMS),
   };
 }
 

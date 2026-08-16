@@ -1,4 +1,5 @@
 import { toKeywordQuery } from "@corpus-lens/rag/keyword-query";
+import { type TermDocumentCounts } from "@corpus-lens/rag/query-rewrite";
 import {
   type RetrievalFilters,
   type RetrievalRepository,
@@ -89,6 +90,58 @@ export function createDrizzleRetrievalRepository(db: Database): RetrievalReposit
         .limit(limit);
 
       return rows;
+    },
+
+    /**
+     * Document frequency for the query's own terms, in one round trip.
+     *
+     * `unnest` turns the term array into rows so a single statement answers for all of
+     * them; the alternative is one query per term, which is the same work split into N
+     * network round trips. The terms are bound as a parameter array, never interpolated.
+     *
+     * `plainto_tsquery` rather than the raw string, so a term is matched by its **stem** —
+     * "reports" and "report" are one lexeme in the index, and counting the literal word
+     * would report a frequency far below the truth.
+     *
+     * Stop words are dropped before the join and are simply absent from the result. The
+     * caller treats a missing term as "not common", which is the right outcome: a stop word
+     * is already ignored by both arms, so removing it from the embedded text would change
+     * the sentence for no retrieval gain.
+     */
+    async countTermDocuments(terms: string[]): Promise<TermDocumentCounts> {
+      const [totals] = await db.select({ total: sql<number>`count(*)::int` }).from(documents);
+      const totalDocuments = totals?.total ?? 0;
+
+      if (terms.length === 0 || totalDocuments === 0) {
+        return { totalDocuments, byTerm: new Map() };
+      }
+
+      const rows = await db.execute<{ term: string; ndoc: number }>(sql`
+        with candidate as materialized (
+          -- sql.param, not the array directly: Drizzle expands a bare JS array into one
+          -- placeholder per element, producing a row constructor cast to an array, which
+          -- Postgres rejects. This binds the whole array as a single parameter.
+          select t.term as term
+          from unnest(${sql.param(terms)}::text[]) as t(term)
+          -- Stop words are removed here, and MATERIALIZED is what makes that work: without
+          -- it the planner is free to inline this into the join below, where
+          -- plainto_tsquery would still be called on every stop word and emit a NOTICE per
+          -- term — ten lines of console noise for an ordinary question. Dropping them is
+          -- also correct on its own terms: a stop word is in the index nowhere and is no
+          -- more a discriminator than a term in every document.
+          where to_tsvector('english', t.term) <> ''::tsvector
+        )
+        select c2.term as term, count(distinct c.document_id)::int as ndoc
+        from candidate c2
+        left join chunks c
+          on c.search_vector @@ plainto_tsquery('english', c2.term)
+        group by c2.term
+      `);
+
+      const byTerm = new Map<string, number>();
+      for (const row of rows) byTerm.set(row.term, Number(row.ndoc));
+
+      return { totalDocuments, byTerm };
     },
   };
 }

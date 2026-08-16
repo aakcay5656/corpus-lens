@@ -7,6 +7,8 @@ import { answerQuestion, minimumFusedScore } from "@corpus-lens/rag/answer";
 import { createChatProvider } from "@corpus-lens/rag/chat-provider-factory";
 import { createEmbeddingProvider } from "@corpus-lens/rag/embedding-provider-factory";
 import { embedAll, type EmbeddingProvider } from "@corpus-lens/rag/embeddings";
+import { splitQueryTerms } from "@corpus-lens/rag/keyword-query";
+import { rewriteForVectorArm } from "@corpus-lens/rag/query-rewrite";
 import {
   DEFAULT_CANDIDATE_COUNT,
   retrieve,
@@ -176,7 +178,13 @@ async function retrievePaths(
   }
 
   if (mode === "vector") {
-    const [embedding] = await embedAll(context.embeddings, [question], context.tokenCounter);
+    // Gets the same rewrite the hybrid path gives this arm. Without it the single-arm
+    // column would measure a *different* vector arm from the one hybrid uses, and the
+    // comparison would credit fusion with an improvement that came from the rewrite.
+    const counts = await context.repository.countTermDocuments(splitQueryTerms(question));
+    const { text } = rewriteForVectorArm(question, counts);
+
+    const [embedding] = await embedAll(context.embeddings, [text], context.tokenCounter);
     if (embedding === undefined) return [];
     const chunks = await context.repository.searchByVector(embedding, DEFAULT_CANDIDATE_COUNT, {});
     return chunks.slice(0, context.topK).map((chunk) => chunk.sourcePath);

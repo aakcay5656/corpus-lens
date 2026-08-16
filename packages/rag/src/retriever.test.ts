@@ -41,8 +41,15 @@ function repository(
       calls.push({ arm: "keyword", limit, docType: filters.docType });
       return Promise.resolve(keyword);
     },
+    countTermDocuments: () => Promise.resolve(NO_COMMON_TERMS),
   };
 }
+
+/**
+ * A corpus in which no term is common, so the vector-arm rewrite never fires. These tests
+ * are about fusion and plumbing; the rewrite has its own file.
+ */
+const NO_COMMON_TERMS = { totalDocuments: 100, byTerm: new Map<string, number>() };
 
 function run(repo: RetrievalRepository, topK = 6, extra: Record<string, unknown> = {}) {
   return retrieve({
@@ -92,6 +99,7 @@ describe("retrieve", () => {
     const repo: RetrievalRepository = {
       searchByVector: slow("vector", [chunk("a")]),
       searchByKeyword: slow("keyword", [chunk("b")]),
+      countTermDocuments: () => Promise.resolve(NO_COMMON_TERMS),
     };
 
     await run(repo);
