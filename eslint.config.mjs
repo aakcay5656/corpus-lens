@@ -57,6 +57,24 @@ export default tseslint.config(
       "@typescript-eslint/consistent-type-imports": "off",
     },
   },
+  {
+    // `apps/mcp` is CommonJS but `jose` — which verifies OIDC signatures — is ESM-only, so
+    // it is loaded with a dynamic import and typed as `typeof import("jose", …)`. The rule
+    // forbids `import()` type annotations by default, and its preferred `import type` form
+    // is exactly what TypeScript rejects here (TS1541) — the annotation is the only way to
+    // write it. Only that sub-rule is relaxed; `prefer` still applies to ordinary imports.
+    files: ["apps/mcp/**/*.ts"],
+    rules: {
+      "@typescript-eslint/consistent-type-imports": [
+        "error",
+        {
+          prefer: "type-imports",
+          fixStyle: "inline-type-imports",
+          disallowTypeAnnotations: false,
+        },
+      ],
+    },
+  },
   // Must stay last: turns off every rule that would fight Prettier.
   prettier,
 );

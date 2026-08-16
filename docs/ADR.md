@@ -370,3 +370,74 @@ the vector arm's blind spots.*
 **Consequence.** The comparison is in the README rather than only in this file, including
 the row that does not flatter the design. An evaluation that only ever confirms the choice
 already made is decoration.
+
+---
+
+## ADR-014 — OIDC is a mode, not a replacement
+
+**Decision.** `MCP_AUTH_MODE` selects between verifying a token this system issued
+(`local`, the default) and verifying one an identity provider issued (`oidc`).
+
+**Rejected.** Replacing the bearer check outright, as originally planned.
+
+**Why.** OIDC as the only mode would mean the MCP server could not be exercised at all
+without first registering an application with a provider, configuring a client, and
+obtaining a token — for a reviewer cloning the repository, that turns a working feature
+into a configuration exercise. The default has to be the thing that works after
+`pnpm db:seed`.
+
+Both are fully implemented. The difference is one variable, and the code paths are the same
+length.
+
+**What OIDC actually buys**, stated precisely: in `local` mode this server holds the
+secret that mints credentials, so it could forge one for itself. Under OIDC it holds only
+a public key — it can verify a credential and cannot create one. That is the property
+worth having, and it is why the mode exists even though the local one is not insecure.
+
+**On the checks.** Verifying the signature is the part everyone implements; the rest is
+where integrations are quietly broken:
+
+- **`alg` is pinned** to asymmetric algorithms rather than read from the token header.
+  Accepting `HS256` would let an attacker sign a token using the JWKS *public* key as the
+  HMAC secret — it is public. Accepting `none` needs no key at all.
+- **`iss` is compared literally.** Without it, a token from any OIDC provider on the
+  internet is accepted, and anyone can create a tenant somewhere to get one.
+- **`aud` is compared literally.** Without it, a token the user legitimately holds for a
+  different application at the same provider is replayable here.
+
+**On role mapping.** The claim name and the admin value are configuration, because
+providers disagree — Auth0 needs a namespaced custom claim, Keycloak nests under
+`realm_access.roles`, Entra uses `roles`. Anything missing, malformed or unrecognised
+resolves to `USER`: a mapping bug must leave someone unable to act, never able to do
+everything.
+
+**Consequence.** The OIDC path does **not** look the caller up in the local `users` table,
+unlike the local path. Under OIDC the provider is the authority on who exists, and
+requiring a local row would reintroduce exactly the per-service user provisioning that
+delegating authentication removes.
+
+---
+
+## ADR-015 — `apps/mcp` stays CommonJS, and `jose` is loaded by dynamic import
+
+**Decision.** Keep the app CommonJS; load the ESM-only `jose` through a cached
+`import()`.
+
+**Rejected.** Converting `apps/mcp` to ESM.
+
+**Why.** `jose` 6 ships pure ESM with no CommonJS build, and it is not a library to work
+around — hand-rolling JWKS fetching, key parsing and signature verification is exactly the
+security-critical code nobody should write twice.
+
+Converting the app was tried first and reverted, because it produced the **dual-package
+hazard**: `packages/db` is CommonJS and resolves `drizzle-orm` through the `require`
+condition, while an ESM app resolves the same package through `import`. TypeScript then
+sees two distinct copies of drizzle's types, and every `SQL<unknown>` crossing the boundary
+stops being assignable — a compile error per query, for a problem strictly larger than the
+one being solved.
+
+A cached dynamic import is three lines, evaluates the module once, and keeps the type-only
+imports free through `resolution-mode: "import"`.
+
+**Consequence.** If the workspace ever moves to ESM, it has to move together — the packages
+first, then the apps. Converting one app in isolation does not work.

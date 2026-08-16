@@ -51,6 +51,26 @@ const schema = z.object({
   OPENAI_BASE_URL: z.url().optional(),
 
   MCP_PORT: z.coerce.number().int().positive().default(3002),
+
+  // ---------------------------------------------------------------------------
+  // Authentication mode
+  // ---------------------------------------------------------------------------
+  // `local` verifies a token this system issued, against JWT_ACCESS_SECRET — the same
+  // credential the API and the web app use, so the demo works with nothing else running.
+  // `oidc` delegates to an identity provider and this server holds no signing key at all.
+  //
+  // Defaulting to `local` is a deliberate departure from "replace the bearer token": making
+  // the default require an external IdP would mean the MCP server could not be tried at all
+  // without registering an application somewhere, which is a worse trade than the bonus is
+  // worth. Both are implemented; the choice is one variable.
+  MCP_AUTH_MODE: z.enum(["local", "oidc"]).default("local"),
+
+  OIDC_ISSUER: z.url().optional(),
+  OIDC_AUDIENCE: z.string().min(1).optional(),
+  // Defaults to the standard discovery location when the issuer is set.
+  OIDC_JWKS_URI: z.url().optional(),
+  OIDC_ROLE_CLAIM: z.string().min(1).default("roles"),
+  OIDC_ADMIN_ROLE: z.string().min(1).default("admin"),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -64,6 +84,18 @@ if (!parsed.success) {
   throw new Error(`Invalid MCP environment:\n${issues}`);
 }
 
+if (parsed.data.MCP_AUTH_MODE === "oidc") {
+  // Checked at startup rather than on the first request. A server that boots in OIDC mode
+  // without an issuer would reject every caller with a confusing error, and the operator
+  // would find out from a user rather than from the logs.
+  const missing = (["OIDC_ISSUER", "OIDC_AUDIENCE"] as const).filter(
+    (key) => parsed.data[key] === undefined,
+  );
+  if (missing.length > 0) {
+    throw new Error(`MCP_AUTH_MODE=oidc requires ${missing.join(" and ")}.`);
+  }
+}
+
 if (parsed.data.EMBEDDING_DIMENSIONS !== EMBEDDING_DIMENSIONS) {
   throw new Error(
     `EMBEDDING_DIMENSIONS is ${parsed.data.EMBEDDING_DIMENSIONS} but the chunks.embedding ` +
@@ -71,4 +103,12 @@ if (parsed.data.EMBEDDING_DIMENSIONS !== EMBEDDING_DIMENSIONS) {
   );
 }
 
-export const mcpEnv = parsed.data;
+export const mcpEnv = {
+  ...parsed.data,
+  // The standard discovery path, unless the provider publishes it elsewhere.
+  OIDC_JWKS_URI:
+    parsed.data.OIDC_JWKS_URI ??
+    (parsed.data.OIDC_ISSUER === undefined
+      ? undefined
+      : `${parsed.data.OIDC_ISSUER.replace(/\/$/, "")}/.well-known/jwks.json`),
+};

@@ -100,3 +100,74 @@ get_document unknown id     isError, no exception
 
 same query via POST /search and via search_corpus → byte-identical results
 ```
+
+## OIDC (optional)
+
+`MCP_AUTH_MODE=oidc` replaces the local bearer check with token validation against an
+identity provider. The server then holds **no signing key at all** — it can verify a
+credential but not create one, which is the property that makes delegated access
+meaningful.
+
+`local` remains the default deliberately. Making OIDC the only mode would mean the MCP
+server could not be tried without first registering an application with a provider, and
+that is a worse trade than the feature is worth. Both are implemented; the choice is one
+variable.
+
+```bash
+MCP_AUTH_MODE=oidc
+OIDC_ISSUER=https://your-tenant.eu.auth0.com/
+OIDC_AUDIENCE=corpus-lens-mcp
+# OIDC_JWKS_URI=            # defaults to ${OIDC_ISSUER}/.well-known/jwks.json
+OIDC_ROLE_CLAIM=roles
+OIDC_ADMIN_ROLE=admin
+```
+
+The server refuses to start if the issuer or audience is missing, rather than rejecting
+every caller at request time with a confusing message.
+
+### What is checked, and what each check stops
+
+| Check | Without it |
+|---|---|
+| Signature against the provider's JWKS | Anyone can write their own token |
+| `alg` pinned to RS/ES/PS | A token claiming `alg: none` is accepted; worse, `HS256` lets an attacker sign using the *public* key as the HMAC secret |
+| `iss` exact match | A token from **any** OIDC provider on the internet is accepted — anyone can create a tenant and get one |
+| `aud` exact match | A token the user legitimately holds for another application at the same provider is replayable here |
+| `exp` / `nbf`, 5s tolerance | Expired tokens keep working |
+| Role defaults to `USER` | A missing or malformed claim could produce an admin |
+
+Keys are cached by `jose` and re-fetched when a token arrives with an unknown `kid`, so
+provider key rotation needs no restart and unknown key ids cannot be used to hammer the
+provider.
+
+### Provider setup
+
+**Auth0.** Create an API with identifier `corpus-lens-mcp` (this becomes `aud`). Issuer is
+`https://<tenant>.<region>.auth0.com/` — with the trailing slash, which Auth0 includes in
+`iss`. Roles need a custom claim added by an Action, so set
+`OIDC_ROLE_CLAIM=https://corpus-lens/roles`.
+
+**Keycloak.** Issuer is `https://<host>/realms/<realm>`; JWKS lives at
+`${issuer}/protocol/openid-connect/certs`, so set `OIDC_JWKS_URI` explicitly. Realm roles
+arrive nested, so `OIDC_ROLE_CLAIM=realm_access.roles`.
+
+**Microsoft Entra ID.** Issuer `https://login.microsoftonline.com/<tenant>/v2.0`, audience
+is the application (client) id. App roles land in `roles`, which is the default.
+
+### Verified
+
+13 tests in `src/oidc.test.ts`, all signing real tokens with a real RSA key pair — nothing
+about the verifier is mocked:
+
+```
+valid token                      accepted, subject and email mapped
+signed by a different key        rejected
+issuer mismatch                  rejected
+audience mismatch                rejected
+expired / not-yet-valid          rejected
+no subject                       rejected
+alg: none (unsigned)             rejected
+roles as array / space-separated  → ADMIN
+realm_access.roles (nested path)  → ADMIN
+missing, empty, wrong-typed, unrecognised, or wrong path → USER
+```

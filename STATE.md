@@ -3,9 +3,9 @@
 Single source of truth for progress. Claude Code updates this at the end of every
 step, before writing the completion report. Read it at the start of every session.
 
-**Current step:** bonuses — 17, 18, 19 remain
-**Last completed step:** 16 — Evaluation harness
-**Last commit:** `2ec329f` · Step 16 pending
+**Current step:** bonuses — 18 (deployment) and 19 (polish) remain
+**Last completed step:** 17 — OIDC for MCP
+**Last commit:** `4554311` · Step 17 pending
 
 | Step | Commit |
 |---|---|
@@ -25,6 +25,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 13 — MCP server | `85e2192` |
 | 14 — Documentation | `9d81d38` |
 | 15 — Self-updating ingestion | `2ec329f` |
+| 16 — Evaluation harness | `4554311` |
 
 > **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
 > the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
@@ -61,7 +62,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 14 | Documentation | P0 | ✅ done |
 | 15 | Self-updating ingestion | P2 | ✅ done |
 | 16 | Evaluation harness | P2 | ✅ done |
-| 17 | OIDC for MCP | P2 | ⬜ |
+| 17 | OIDC for MCP | P2 | ✅ done |
 | 18 | Live deployment | P2 | ⬜ |
 | 19 | Polish | P2 | ⬜ |
 
@@ -98,6 +99,12 @@ substantial ones into `docs/ADR.md`.
 | 3 | `POST /ingest` does **not** accept a corpus directory from the client | It would let an authenticated admin walk any directory the API process can read — path traversal dressed up as a feature. The directory comes from `CORPUS_DIR` on the server. |
 | 3 | Auth responses carry no tokens in the body | Access and refresh JWTs travel in httpOnly cookies; returning them in the body hands back exactly what the cookie flag exists to withhold. |
 | 3 | `Citation` carries both `marker` and `sourceIndex` | The server drops citation markers that do not match the supplied context, after which the surviving markers are no longer contiguous. The UI has to resolve what the model actually wrote, not what it should have written. |
+| 17 | OIDC is a **mode** (`MCP_AUTH_MODE`), not a replacement — `local` stays the default | Deviates from PLAN's "replace the bearer token". Making OIDC the only mode would mean the MCP server could not be exercised without first registering an application with a provider, turning a working feature into a configuration exercise for anyone cloning the repo. Both are fully implemented; the difference is one variable. |
+| 17 | `alg` is **pinned** to asymmetric algorithms rather than read from the token header | The single most important line in `oidc.ts`. Accepting `HS256` would let an attacker sign a token using the JWKS *public* key as the HMAC secret — it is public by definition; `none` needs no key at all. Tested: an `alg: none` token is rejected. |
+| 17 | `iss` and `aud` are compared literally, and both are required at startup | Without `iss`, a token from *any* OIDC provider on the internet is accepted. Without `aud`, a token the user legitimately holds for another application at the same provider is replayable here. Both have tests. |
+| 17 | Role mapping defaults to **USER** for anything missing, malformed or unrecognised | A mapping bug must leave someone unable to act, never able to do everything. Tested from five angles including a right-value-wrong-path case. |
+| 17 | The OIDC path does **not** look the caller up in the local `users` table, unlike local mode | Under OIDC the provider is the authority on who exists; requiring a local row would reintroduce the per-service user provisioning that delegating authentication removes. |
+| 17 | `apps/mcp` stays CommonJS; `jose` is loaded by a cached dynamic import | Converting the app to ESM was tried and **reverted**: `packages/db` is CJS and resolves `drizzle-orm` via `require` while an ESM app resolves it via `import`, so the compiler sees two copies of drizzle's types and every `SQL<unknown>` stops being assignable — the dual-package hazard. If this workspace ever goes ESM it must go together, packages first. |
 | 16 | **The comparison table does not endorse hybrid, and it is published anyway** | Measured over 13 answerable queries: hybrid recall 0.923 / MRR 0.737, vector 0.846 / 0.612, keyword **0.923 / 0.833**. Hybrid beats vector decisively (`loop_complete` is missed *entirely* by the vector arm) but keyword-only matches its recall and beats its MRR. Hybrid stays because 13 queries is far too small to make an architectural decision on and because the case keyword fails — true paraphrase with no shared vocabulary — is real and unrepresented here. See `docs/ADR.md` ADR-013. |
 | 16 | The MRR gap is the `k = 60` trade showing its cost | RRF flattens the top ranks so agreement beats confidence, so a document keyword ranks 1st and vectors rank 5th lands at hybrid 2–3. That is what the constant was chosen for; the table shows the price. Not retuned — 13 queries is a sample, not evidence. |
 | 16 | Four discriminating queries added to `eval/queries.yaml` | The original nine could not distinguish the three modes at all: every one was found by *both* arms independently. An evaluation that cannot fail is not an evaluation. The new ones probe rare literal tokens (`MRAID`, `loop_complete` — one occurrence each) and paraphrase. |
@@ -261,8 +268,6 @@ What was dropped and why. All of this is in the README's limitations section.
 
 - **Query decomposition for multi-intent questions.** The one measured retrieval failure
   (eval `q7`). Deferred to Step 19; the diagnosis is in the README and `docs/ADR.md`.
-- **OIDC for the MCP server** (Step 17). The transport was chosen for it and the 401 already
-  returns `WWW-Authenticate`; the bearer check is one file.
 - **Live deployment** (Step 18). The README documents what it would take.
 - **Conversation history in chat.** Each question is independent; follow-ups do not work.
 - **User-management screen.** Admins create users through `POST /auth/register`.

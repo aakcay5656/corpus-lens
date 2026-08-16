@@ -6,6 +6,7 @@ import { type Request } from "express";
 import jwt from "jsonwebtoken";
 
 import { mcpEnv } from "./env";
+import { OidcError, createOidcVerifier, type OidcVerifier } from "./oidc";
 
 /**
  * Authenticating an MCP caller.
@@ -15,7 +16,16 @@ import { mcpEnv } from "./env";
  * REST API protects is reachable through these tools, so an unauthenticated MCP endpoint
  * would make the guards, the roles and the cookie flags on the API decorative.
  *
- * Two checks, not one:
+ * There are two modes, chosen by `MCP_AUTH_MODE`:
+ *
+ * - **local** (default) — the token was issued by this system's own API and is verified
+ *   against the shared `JWT_ACCESS_SECRET`. Nothing external is needed, which is why it is
+ *   the default: the MCP server can be tried immediately after `pnpm db:seed`.
+ * - **oidc** — the token was issued by an identity provider and is verified against its
+ *   published public keys. This server then holds no signing key at all and cannot mint a
+ *   credential for itself. See `oidc.ts`.
+ *
+ * In local mode there are two checks, not one:
  *
  * 1. **The signature**, against the same `JWT_ACCESS_SECRET` the API signs with. This is
  *    what "validated against the same user store" means concretely — there is no second
@@ -35,10 +45,44 @@ export interface McpCaller {
 
 export class UnauthenticatedError extends Error {}
 
+/**
+ * Built once at startup rather than per request, so the JWKS cache is shared across
+ * callers. A verifier per request would re-fetch the provider's keys every time, turning
+ * every tool call into an outbound HTTP round trip and, on a busy server, into something
+ * the provider would rate-limit.
+ */
+let oidcVerifier: OidcVerifier | undefined;
+
+function verifierForOidc(): OidcVerifier {
+  oidcVerifier ??= createOidcVerifier({
+    // Non-null is safe: env.ts refuses to start in oidc mode without these.
+    issuer: mcpEnv.OIDC_ISSUER ?? "",
+    audience: mcpEnv.OIDC_AUDIENCE ?? "",
+    jwksUri: mcpEnv.OIDC_JWKS_URI ?? "",
+    roleClaim: mcpEnv.OIDC_ROLE_CLAIM,
+    adminRoleValue: mcpEnv.OIDC_ADMIN_ROLE,
+  });
+  return oidcVerifier;
+}
+
 export async function authenticate(request: Request, db: Database): Promise<McpCaller> {
   const token = extractBearerToken(request);
   if (token === undefined) {
     throw new UnauthenticatedError("Missing bearer token.");
+  }
+
+  if (mcpEnv.MCP_AUTH_MODE === "oidc") {
+    try {
+      // No database lookup here, deliberately. In local mode the user row is this system's
+      // own record and checking it is how a deleted account stops working; under OIDC the
+      // provider is the authority on who exists, and requiring a local row would mean every
+      // user had to be provisioned here first — which is the coupling OIDC removes.
+      return await verifierForOidc().verify(token);
+    } catch (error) {
+      throw new UnauthenticatedError(
+        error instanceof OidcError ? error.message : "Invalid or expired token.",
+      );
+    }
   }
 
   let payload: jwt.JwtPayload;

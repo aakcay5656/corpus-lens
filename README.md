@@ -327,6 +327,12 @@ account stops working immediately rather than when the token expires. Authentica
 
 Tools: `search_corpus(query, topK, docType)` and `get_document(id)`.
 
+**OIDC** is supported as an alternative: `MCP_AUTH_MODE=oidc` validates tokens against an
+identity provider's JWKS, checking issuer, audience, expiry and pinned algorithms, and
+mapping a configurable claim onto the two roles. The server then holds no signing key at
+all. `local` stays the default so the MCP server can be tried without registering an
+application anywhere. Provider setup for Auth0, Keycloak and Entra ID is in the MCP README.
+
 ---
 
 ## Design choices
@@ -573,8 +579,8 @@ table.
 - [x] **Bonus** — configurable provider base URL (OpenRouter / Azure / self-hosted)
 - [x] **Bonus** — incremental re-indexing: `--watch` re-indexes on change, `--interval`
       on a timer; both re-embed only what changed
-- [ ] **Bonus** — OIDC for the MCP server (the transport and the `WWW-Authenticate` hook are
-      in place)
+- [x] **Bonus** — OIDC for the MCP server: JWKS validation with issuer, audience, expiry
+      and pinned algorithms; `MCP_AUTH_MODE=oidc`
 - [ ] **Bonus** — live deployment
 
 ---
@@ -640,9 +646,9 @@ Honest list. Each of these is a decision, not an oversight.
 
 1. **Query decomposition** for multi-intent questions — the one measured retrieval failure.
 2. **A file watcher** on the corpus directory; the hash-based classification already exists.
-3. **OIDC on the MCP server**, replacing the bearer check. The transport was chosen for it.
-4. **Reranking** the fused top 20 with a cross-encoder or the LLM.
-5. **Conversation history** in chat, with the previous turn folded into retrieval.
+3. **Reranking** the fused top 20 with a cross-encoder or the LLM.
+4. **Conversation history** in chat, with the previous turn folded into retrieval.
+5. **A live deployment**, which is the only remaining bonus not attempted.
 
 ---
 

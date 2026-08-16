@@ -1194,3 +1194,81 @@ The floor layer needs no model and still holds independently — the fully off-d
 abstains at 0.0164 with the model never called. q10 and q11 returned `MODEL_DECLINED` in
 earlier runs of the same code against the same model. The README says all of this rather than
 quoting the earlier numbers as if this run had produced them.
+
+---
+
+### Step 17 — OIDC for the MCP server (bonus)
+
+- **AI did:** wrote the OIDC verifier, wired it as a selectable auth mode with startup
+  validation, documented provider setup for Auth0, Keycloak and Entra ID, and wrote 13 tests
+  that sign real tokens with a real key pair.
+- **I wrote/rewrote:** the decision not to follow the plan. `PLAN.md` says "replace the bearer
+  token with OIDC". Doing that literally would mean the MCP server could not be exercised at
+  all without first registering an application with a provider, configuring a client and
+  obtaining a token — for someone cloning the repository, a working feature becomes a
+  configuration exercise. It is a mode instead, defaulting to local, and both paths are fully
+  implemented. The deviation is recorded in `docs/ADR.md` rather than left for someone to
+  notice.
+- **Got it wrong:** I converted `apps/mcp` to ESM and had to revert it.
+
+  `jose` 6 ships pure ESM with no CommonJS build, and it is not a library to work around —
+  hand-rolling JWKS fetching, key parsing and signature verification is precisely the
+  security-critical code nobody should write twice. Converting the app looked like the clean
+  answer, and the emit worked immediately.
+
+  Then the type errors arrived, in a place I did not expect: every Drizzle query in
+  `tools.ts` and `authenticate.ts`. `packages/db` is CommonJS and resolves `drizzle-orm`
+  through the `require` condition; an ESM app resolves the same package through `import`.
+  TypeScript therefore sees two distinct copies of drizzle's types, and every `SQL<unknown>`
+  crossing the boundary stops being assignable. That is the dual-package hazard, and it is a
+  strictly larger problem than the one I was solving.
+
+- **How I caught it:** the compiler, immediately — this is the one defect in this log that a
+  green build would not have hidden. Worth noting for contrast: nearly everything else recorded
+  here compiled fine and failed at runtime. The reverted approach is documented in the tsconfig
+  and in ADR-015, because "why is this app not ESM when its main dependency is" is a question
+  someone will ask, and the answer is not obvious from the code.
+
+**What OIDC actually buys, stated precisely.** In local mode this server holds the secret that
+mints credentials — it *could* forge one for itself. Under OIDC it holds only a public key: it
+can verify a credential and cannot create one. That is the property worth having, and it is why
+the mode exists even though the local one is not insecure.
+
+**The checks, and why the list is longer than "verify the signature".** Verifying the signature
+is the part every integration gets right; the rest is where they are quietly broken:
+
+- **`alg` pinned to asymmetric algorithms.** JWT libraries have historically honoured the
+  token's own `alg` header, so a token claiming `HS256` would be validated using the JWKS
+  *public* key as an HMAC secret — a key anyone can fetch. `none` needs no key at all. There is
+  a test that signs an `alg: none` token and asserts it is rejected.
+- **`iss` compared literally.** Without it, a token from any OIDC provider on the internet is
+  accepted, and anyone can create a tenant somewhere to obtain one.
+- **`aud` compared literally.** Without it, a token the user legitimately holds for a different
+  application at the same provider is replayable here.
+
+**On the tests.** Nothing about the verifier is mocked. Every token is genuinely signed with a
+generated RSA key pair, and every rejection is a genuine cryptographic or claim failure —
+mocking `jwtVerify` in a test *of* the verifier would prove only that the test agrees with
+itself. Thirteen cases:
+
+```
+valid token                                       accepted, subject and email mapped
+signed by a different key                         rejected
+issuer mismatch                                   rejected
+audience mismatch                                 rejected
+expired · not-yet-valid · no subject              rejected
+alg: none (unsigned)                              rejected
+roles array · space-separated string              → ADMIN
+realm_access.roles (nested path, Keycloak shape)  → ADMIN
+configured non-default admin value                → ADMIN
+missing · empty · wrong-typed · unrecognised ·
+  right value at the wrong configured path        → USER
+```
+
+That last line is the one I care most about. Role mapping is where a plausible-looking bug
+grants an attacker everything, so the default direction is tested from five angles rather than
+asserted in a comment.
+
+**A regression check that mattered.** After all of this, local mode still works: `tools/list`
+returns both tools with an API-issued token, and an unauthenticated request still gets 401.
+Adding a second authentication path is exactly the change that silently breaks the first one.
