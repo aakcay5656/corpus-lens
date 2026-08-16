@@ -11,4 +11,10 @@ import { z } from "zod";
  */
 export const roleSchema = z.enum(["USER", "ADMIN"]);
 
+/**
+ * The roles as a list, read off the schema rather than written a second time — a UI that
+ * offers a role the validator rejects is a bug nothing else would catch.
+ */
+export const ROLES = roleSchema.options;
+
 export type Role = z.infer<typeof roleSchema>;

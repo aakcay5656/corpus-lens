@@ -10,6 +10,7 @@ const LINKS = [
   { href: "/dashboard", label: "Overview", exact: true },
   { href: "/dashboard/documents", label: "Documents", exact: false },
   { href: "/dashboard/runs", label: "Ingestion", exact: false },
+  { href: "/dashboard/users", label: "Users", exact: false },
 ];
 
 export function DashboardNav() {

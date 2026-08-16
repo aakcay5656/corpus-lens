@@ -14,6 +14,7 @@ import { IngestModule } from "./ingest/ingest.module";
 import { RagModule } from "./rag/rag.module";
 import { SearchModule } from "./search/search.module";
 import { StatsModule } from "./stats/stats.module";
+import { UsersModule } from "./users/users.module";
 
 /**
  * Both guards are registered **globally**, and that is the security decision of this step.
@@ -41,6 +42,7 @@ import { StatsModule } from "./stats/stats.module";
     DocumentsModule,
     IngestModule,
     StatsModule,
+    UsersModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
