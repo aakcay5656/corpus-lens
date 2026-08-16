@@ -1,6 +1,7 @@
 import { type Metadata } from "next";
 
 import { Card, CardBody } from "@/components/ui/card";
+import { Logo } from "@/components/ui/logo";
 
 import { LoginForm } from "./login-form";
 
@@ -28,7 +29,10 @@ export default async function LoginPage({
     <main className="flex min-h-dvh items-center justify-center px-4 py-10">
       <div className="w-full max-w-sm">
         <div className="mb-6 text-center">
-          <h1 className="text-xl font-semibold text-ink">corpus-lens</h1>
+          <h1 className="flex items-center justify-center gap-2 text-xl font-semibold text-ink">
+            <Logo className="size-6 shrink-0 text-accent" />
+            corpus-lens
+          </h1>
           <p className="mt-1 text-sm text-muted">
             Search and ask questions about the documentation corpus.
           </p>

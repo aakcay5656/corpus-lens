@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="corpus-lens">
+  <!--
+    The tab icon. Next.js picks this up from `app/icon.svg` automatically and emits the
+    <link rel="icon"> for it.
+
+    Designed for 16px first, because that is the only size anyone actually sees. Everything
+    here survives being drawn eight pixels wide: one filled shape carrying the colour, and
+    two strokes at 2.5–3 units on a 32 unit grid, which stay above a hairline once scaled
+    down. Document lines inside the lens were tried and cut — at tab size they collapse into
+    a grey smudge and cost the ring its contrast.
+
+    The background is solid rather than transparent so the mark reads on both a light and a
+    dark browser chrome without needing two files or a prefers-color-scheme variant, which
+    favicons honour inconsistently.
+  -->
+  <rect width="32" height="32" rx="7" fill="#3b5bdb" />
+  <circle cx="14" cy="14" r="6.25" fill="none" stroke="#ffffff" stroke-width="2.5" />
+  <path
+    d="M18.9 18.9 L23.6 23.6"
+    stroke="#ffffff"
+    stroke-width="3"
+    stroke-linecap="round"
+  />
+</svg>

@@ -103,7 +103,16 @@ function isSafeReturnPath(value: string | null): value is string {
 }
 
 export const config = {
-  // Everything except Next's own assets. Listing what to skip rather than what to cover
-  // means a route added later is protected by default.
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  // Everything except Next's own assets and the icons.
+  //
+  // Listing what to skip rather than what to cover means a page added later is protected
+  // by default. The exclusions are named individually rather than matched by extension,
+  // because a blanket "anything with a dot" would also let through any future route
+  // handler whose path happened to contain one.
+  //
+  // `icon.svg` is here because it was missing and the tab icon silently 404'd — the
+  // middleware answered it with a 307 to /login, and a browser will not render a redirect
+  // as an image. It only showed up by requesting the file rather than trusting that Next
+  // "handles icons".
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|icon.svg|apple-icon.png|robots.txt).*)"],
 };
