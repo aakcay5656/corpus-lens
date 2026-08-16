@@ -2,26 +2,45 @@ import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
 import { createDatabase } from "@corpus-lens/db/client";
+import { createDrizzleRetrievalRepository } from "@corpus-lens/db/retrieval-repository";
+import { answerQuestion, minimumFusedScore } from "@corpus-lens/rag/answer";
+import { createChatProvider } from "@corpus-lens/rag/chat-provider-factory";
 import { createEmbeddingProvider } from "@corpus-lens/rag/embedding-provider-factory";
-import { retrieve } from "@corpus-lens/rag/retriever";
-import { createTokenCounter } from "@corpus-lens/rag/tokenizer";
+import { embedAll, type EmbeddingProvider } from "@corpus-lens/rag/embeddings";
+import {
+  DEFAULT_CANDIDATE_COUNT,
+  retrieve,
+  type RetrievalRepository,
+} from "@corpus-lens/rag/retriever";
+import { createTokenCounter, type TokenCounter } from "@corpus-lens/rag/tokenizer";
 import { parse as parseYaml } from "yaml";
 
 import { ingestEnv, resolveRepositoryPath } from "../config/env";
-import { createDrizzleRetrievalRepository } from "@corpus-lens/db/retrieval-repository";
+import {
+  abstentionAccuracy,
+  firstExpectedRank,
+  formatRatio,
+  fullHitRate,
+  meanReciprocalRank,
+  recallAtK,
+  type AbstentionOutcome,
+  type QueryOutcome,
+} from "./metrics";
 
 /**
- * `pnpm eval` — runs `eval/queries.yaml` against live retrieval and prints, per query,
- * where the expected document landed.
+ * `pnpm eval [--k 6] [--answers] [--verbose]`
  *
- * This exists because Step 6's acceptance criterion is a number, not an opinion: every
- * answerable query must surface its expected document in the top k. Step 16 extends this
- * same script with recall@k, MRR and a vector-only / keyword-only / hybrid comparison; for
- * now it answers the one question that decides whether retrieval is finished.
+ * Turns the design claims into numbers. Two things are measured:
  *
- * Unanswerable queries are listed with their top score but not graded here — abstention is
- * Step 7's mechanism, and the useful thing to see now is how close the corpus gets to a
- * question it cannot answer.
+ * 1. **Retrieval, three ways.** The same queries run through vector-only, keyword-only and
+ *    hybrid. Hybrid is the argument the whole system rests on, and an argument with no
+ *    measurement behind it is a preference. The single-arm runs are not strawmen: they get
+ *    the same candidate budget and the same top-k, and they are read straight off the
+ *    repository so no production code grows a branch that exists only for the benchmark.
+ *
+ * 2. **Abstention** (`--answers`). The floor layer is deterministic and free; the full
+ *    two-layer behaviour needs the model, so it is opt-in — twelve generations cost real
+ *    money and take half a minute.
  */
 
 interface EvalQuery {
@@ -29,7 +48,6 @@ interface EvalQuery {
   type: "answerable" | "unanswerable";
   question: string;
   expect?: string[];
-  also_useful?: string[];
 }
 
 interface EvalFile {
@@ -37,11 +55,22 @@ interface EvalFile {
   queries: EvalQuery[];
 }
 
+type Mode = "hybrid" | "vector" | "keyword";
+const MODES: Mode[] = ["hybrid", "vector", "keyword"];
+
+interface RetrievalContext {
+  repository: RetrievalRepository;
+  embeddings: EmbeddingProvider;
+  tokenCounter: TokenCounter;
+  topK: number;
+}
+
 async function main(): Promise<void> {
   const { values } = parseArgs({
     options: {
       k: { type: "string" },
       file: { type: "string" },
+      answers: { type: "boolean", default: false },
       verbose: { type: "boolean", default: false },
     },
     allowPositionals: false,
@@ -51,7 +80,7 @@ async function main(): Promise<void> {
   const suite = parseYaml(readFileSync(path, "utf8")) as EvalFile;
   const topK = values.k === undefined ? (suite.default_k ?? 6) : Number.parseInt(values.k, 10);
 
-  const provider = createEmbeddingProvider({
+  const embeddings = createEmbeddingProvider({
     kind: ingestEnv.EMBEDDING_PROVIDER,
     dimensions: ingestEnv.EMBEDDING_DIMENSIONS,
     model: ingestEnv.EMBEDDING_MODEL,
@@ -60,81 +89,201 @@ async function main(): Promise<void> {
   });
 
   console.log(`queries:   ${path}`);
-  console.log(`embedding: ${provider.model}`);
+  console.log(`embedding: ${embeddings.model}`);
   console.log(`top k:     ${topK}`);
   if (ingestEnv.EMBEDDING_PROVIDER === "deterministic") {
     console.log(
-      "\n⚠ These numbers were produced by the offline embedding provider, which matches\n" +
-        "  vocabulary rather than meaning. They show that retrieval is wired correctly; they\n" +
-        "  are not a measurement of retrieval quality. Re-run with EMBEDDING_PROVIDER=openai.",
+      "\n⚠ These numbers came from the offline embedding provider, which matches vocabulary\n" +
+        "  rather than meaning. They show retrieval is wired correctly; they are not a\n" +
+        "  measurement of retrieval quality. Re-run with EMBEDDING_PROVIDER=openai.",
     );
   }
 
   const { db, close } = createDatabase({ url: ingestEnv.DATABASE_URL, maxConnections: 4 });
-  const repository = createDrizzleRetrievalRepository(db);
-  const tokenCounter = createTokenCounter();
+  const context: RetrievalContext = {
+    repository: createDrizzleRetrievalRepository(db),
+    embeddings,
+    tokenCounter: createTokenCounter(),
+    topK,
+  };
 
-  let answerable = 0;
-  let passed = 0;
+  const outcomes: Record<Mode, QueryOutcome[]> = { hybrid: [], vector: [], keyword: [] };
+  let failures = 0;
 
   try {
     for (const query of suite.queries) {
-      const { passages, timings } = await retrieve({
-        repository,
-        embeddingProvider: provider,
-        tokenCounter,
-        query: query.question,
-        topK,
-      });
-
-      const paths = passages.map((passage) => passage.sourcePath);
       const expected = query.expect ?? [];
+      const perMode: Record<Mode, string[]> = { hybrid: [], vector: [], keyword: [] };
 
-      if (query.type === "answerable") {
-        answerable += 1;
-        const missing = expected.filter((document) => !paths.includes(document));
-        const ok = missing.length === 0;
-        if (ok) passed += 1;
-
-        const rank = expected.length === 0 ? -1 : paths.indexOf(expected[0] ?? "") + 1;
-        console.log(
-          `\n${ok ? "PASS" : "FAIL"}  ${query.id}  (${timings.totalMs}ms)` +
-            (ok && rank > 0 ? `  expected document at rank ${rank}` : ""),
-        );
-        if (!ok) console.log(`      missing: ${missing.join(", ")}`);
-      } else {
-        console.log(
-          `\n----  ${query.id}  (${timings.totalMs}ms)  top score ` +
-            `${passages[0]?.score.toFixed(4) ?? "none"}  — must abstain (Step 7)`,
-        );
+      for (const mode of MODES) {
+        perMode[mode] = await retrievePaths(mode, query.question, context);
       }
 
-      console.log(`      "${query.question}"`);
-      for (const [index, passage] of passages.entries()) {
-        const marks = [
-          expected.includes(passage.sourcePath) ? "*" : " ",
-          (query.also_useful ?? []).includes(passage.sourcePath) ? "+" : " ",
-        ].join("");
-        console.log(
-          `      ${marks} ${String(index + 1).padStart(2)}. ${passage.score.toFixed(4)}  ` +
-            `v=${formatRank(passage.vectorRank)} k=${formatRank(passage.keywordRank)}  ` +
-            passage.sourcePath,
-        );
-        if (values.verbose === true) console.log(`            ${passage.breadcrumb}`);
+      if (query.type === "answerable") {
+        for (const mode of MODES) outcomes[mode].push({ expected, retrieved: perMode[mode] });
+
+        const missing = expected.filter((document) => !perMode.hybrid.includes(document));
+        if (missing.length > 0) failures += 1;
+        printAnswerable(query, expected, perMode, missing);
+      } else {
+        printUnanswerable(query, perMode);
+      }
+
+      if (values.verbose === true) {
+        for (const mode of MODES) {
+          console.log(`      ${mode.padEnd(8)} ${perMode[mode].join(", ")}`);
+        }
       }
     }
 
-    console.log(`\n${"=".repeat(60)}`);
-    console.log(`answerable queries: ${passed}/${answerable} found every expected document`);
-    if (passed < answerable) process.exitCode = 1;
+    printComparison(outcomes, topK);
+
+    if (values.answers === true) await measureAbstention(suite, context);
+
+    const plural = failures === 1 ? "y" : "ies";
+    console.log(
+      `\n${failures === 0 ? "PASS" : "FAIL"}: hybrid missed ${failures} answerable quer${plural}`,
+    );
+    if (failures > 0) process.exitCode = 1;
   } finally {
     await close();
   }
 }
 
-/** `v=—` reads better than `v=null` in a column of numbers. */
-function formatRank(rank: number | null): string {
-  return rank === null ? " —" : String(rank).padStart(2);
+/**
+ * Runs one retrieval mode and returns source paths, best first.
+ *
+ * The single-arm modes read the repository directly rather than going through a
+ * "disable one arm" switch inside `retrieve()`. That keeps the shipped path free of a
+ * branch that exists only to be benchmarked, and it is the same SQL either way. Both get
+ * the same candidate budget as hybrid, so the comparison is between ranking strategies
+ * rather than between how much each was allowed to look at.
+ */
+async function retrievePaths(
+  mode: Mode,
+  question: string,
+  context: RetrievalContext,
+): Promise<string[]> {
+  if (mode === "hybrid") {
+    const { passages } = await retrieve({
+      repository: context.repository,
+      embeddingProvider: context.embeddings,
+      tokenCounter: context.tokenCounter,
+      query: question,
+      topK: context.topK,
+    });
+    return passages.map((passage) => passage.sourcePath);
+  }
+
+  if (mode === "vector") {
+    const [embedding] = await embedAll(context.embeddings, [question], context.tokenCounter);
+    if (embedding === undefined) return [];
+    const chunks = await context.repository.searchByVector(embedding, DEFAULT_CANDIDATE_COUNT, {});
+    return chunks.slice(0, context.topK).map((chunk) => chunk.sourcePath);
+  }
+
+  const chunks = await context.repository.searchByKeyword(question, DEFAULT_CANDIDATE_COUNT, {});
+  return chunks.slice(0, context.topK).map((chunk) => chunk.sourcePath);
+}
+
+function printAnswerable(
+  query: EvalQuery,
+  expected: string[],
+  perMode: Record<Mode, string[]>,
+  missing: string[],
+): void {
+  const rank = (mode: Mode): string => {
+    const found = firstExpectedRank({ expected, retrieved: perMode[mode] });
+    return found === null ? " —" : String(found).padStart(2);
+  };
+
+  console.log(
+    `\n${missing.length === 0 ? "PASS" : "FAIL"}  ${query.id}` +
+      `   hybrid ${rank("hybrid")} · vector ${rank("vector")} · keyword ${rank("keyword")}`,
+  );
+  console.log(`      "${query.question}"`);
+  if (missing.length > 0) console.log(`      hybrid missed: ${missing.join(", ")}`);
+}
+
+function printUnanswerable(query: EvalQuery, perMode: Record<Mode, string[]>): void {
+  console.log(`\n----  ${query.id}   (out of corpus — must abstain)`);
+  console.log(`      "${query.question}"`);
+  console.log(`      hybrid top hit: ${perMode.hybrid[0] ?? "nothing"}`);
+}
+
+/** The table the design argument stands or falls on. */
+function printComparison(outcomes: Record<Mode, QueryOutcome[]>, topK: number): void {
+  console.log(`\n${"=".repeat(64)}`);
+  console.log(
+    `retrieval comparison over ${outcomes.hybrid.length} answerable queries, k=${topK}\n`,
+  );
+  console.log("  mode        recall@k      MRR   all-expected-found");
+  console.log(`  ${"-".repeat(50)}`);
+
+  for (const mode of MODES) {
+    const rows = outcomes[mode];
+    console.log(
+      `  ${mode.padEnd(10)} ${formatRatio(recallAtK(rows)).padStart(7)}  ` +
+        `${formatRatio(meanReciprocalRank(rows)).padStart(7)}  ` +
+        `${formatRatio(fullHitRate(rows)).padStart(7)}`,
+    );
+  }
+}
+
+/**
+ * Abstention, behind `--answers` because it calls the model.
+ *
+ * Both directions are measured, not only the flattering one: a system that refuses
+ * everything scores perfectly on out-of-corpus questions, so wrongly-refused answerable
+ * questions are counted alongside. The pair is the result; either number alone is not.
+ */
+async function measureAbstention(suite: EvalFile, context: RetrievalContext): Promise<void> {
+  const chatProvider = createChatProvider({
+    kind: "openai",
+    model: ingestEnv.CHAT_MODEL,
+    apiKey: ingestEnv.CHAT_API_KEY,
+    baseUrl: ingestEnv.CHAT_BASE_URL,
+  });
+
+  console.log(`\n${"=".repeat(64)}`);
+  console.log(`abstention, both layers, via ${chatProvider.model}\n`);
+
+  const outcomes: AbstentionOutcome[] = [];
+
+  for (const query of suite.queries) {
+    const result = await answerQuestion({
+      repository: context.repository,
+      embeddingProvider: context.embeddings,
+      tokenCounter: context.tokenCounter,
+      chatProvider,
+      question: query.question,
+      topK: context.topK,
+    });
+
+    const shouldAbstain = query.type === "unanswerable";
+    const didAbstain = !result.answered;
+    outcomes.push({ shouldAbstain, didAbstain });
+
+    console.log(
+      `  ${shouldAbstain === didAbstain ? "ok   " : "WRONG"} ${query.id.padEnd(30)} ` +
+        `answered=${String(result.answered).padEnd(5)} ${result.abstainReason ?? ""}`,
+    );
+  }
+
+  const accuracy = abstentionAccuracy(outcomes);
+  console.log(
+    `\n  correctly refused   ${accuracy.correctRefusals}/${accuracy.unanswerable} out-of-corpus questions`,
+  );
+  console.log(
+    `  wrongly refused     ${accuracy.falseRefusals}/${accuracy.answerable} answerable questions`,
+  );
+  console.log(
+    `  answered anyway     ${accuracy.hallucinationRisk}/${accuracy.unanswerable} out-of-corpus questions  ` +
+      (accuracy.hallucinationRisk === 0
+        ? "(none — the one that matters)"
+        : "← the expensive failure"),
+  );
+  console.log(`\n  score floor: ${minimumFusedScore().toFixed(4)}`);
 }
 
 main().catch((error: unknown) => {

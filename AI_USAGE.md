@@ -1115,3 +1115,82 @@ once — the path-level optimisation is wrong for all three, while a full pass c
 of a second here because unchanged documents are skipped by hash without being re-embedded. On a
 corpus large enough for that to hurt, the classification is already the right place to add a
 path filter; the watcher would not need to change.
+
+---
+
+### Step 16 — Evaluation harness (bonus)
+
+- **AI did:** wrote the metrics module, rebuilt `pnpm eval` to run three retrieval modes over
+  the same queries, added the abstention measurement behind `--answers`, added four
+  discriminating queries, and put the resulting table in the README and in `docs/ADR.md`.
+- **I wrote/rewrote:** the conclusion. See below — the table said something other than what I
+  expected, and the first draft of the write-up quietly emphasised the half that flattered the
+  design.
+- **Got it wrong:** not the code. The *evaluation set* was wrong, and it had been wrong since
+  Step 0 without anyone noticing, because it had never been asked a question it could fail.
+
+  The first run of the comparison produced this:
+
+  ```
+  hybrid    recall 0.889   MRR 0.750
+  vector    recall 0.889   MRR 0.726
+  keyword   recall 0.889   MRR 0.759
+  ```
+
+  Three identical recall figures is not a result, it is an instrument reading zero. Looking at
+  the per-query ranks showed why: **every one of the nine queries was found by both arms
+  independently**, usually at rank 1. The set could not distinguish the modes because nothing
+  in it was hard for either.
+
+- **How I caught it:** by not accepting a number I could not explain. Three modes agreeing to
+  three decimal places is either a coincidence or a measurement that is not measuring, and the
+  per-query breakdown answered it in one glance.
+
+**Fixing the instrument, not the result.** I added four queries chosen to be hard for a
+*specific* arm — two rare literal tokens (`MRAID` and `loop_complete`, one occurrence each in
+the corpus) and two paraphrases. That is a real risk of self-deception, so it is worth being
+explicit about the line: these probe failure modes the design *claims* to handle, and the
+expected document for each is the one a human would obviously cite. They are not tuned until
+hybrid wins — and in fact they did not make hybrid win.
+
+**The result, which is not what I expected:**
+
+| Mode | recall@6 | MRR |
+|---|---:|---:|
+| hybrid | 0.923 | 0.737 |
+| vector-only | 0.846 | 0.612 |
+| keyword-only | **0.923** | **0.833** |
+
+Hybrid beats vector-only decisively — `loop_complete` is missed **entirely** by the vector arm
+and found at rank 1 by keyword, which is precisely the blind spot the keyword arm exists to
+cover. But keyword-only matches hybrid on recall and beats it on MRR.
+
+I wrote two paraphrase queries specifically to find a case where keyword search fails. It found
+both at rank 1.
+
+**Why hybrid stays, stated as narrowly as the evidence allows.** Thirteen answerable queries is
+far too small a sample to drop an arm on, and this corpus — 23k tokens of internally consistent
+documentation where questions reuse the vocabulary of the documents answering them — is close
+to a best case for lexical matching. The MRR gap also has an intended cause rather than a
+mysterious one: `k = 60` flattens the top ranks so agreement between arms outweighs confidence
+within one, so a document keyword ranks 1st and vectors rank 5th lands at hybrid 2 or 3. That
+is the behaviour the constant was chosen for; the table shows what it costs.
+
+What the table honestly supports is narrower than "hybrid is better": *hybrid is never worse
+than the better arm on recall, and it removes the vector arm's blind spots*. That is the claim
+in the README, and the row that does not flatter the design is printed next to it. Retuning `k`
+until the table agreed with the architecture would be fitting the design to a 13-query sample —
+the same error `docs/CORPUS.md` refuses for chunk size.
+
+**Cut short by money.** The `--answers` run reached 7 of 16 queries before the API balance ran
+out (free tier, $0.14 spent):
+
+```
+q1–q7    answered = true   7/7 answerable correctly answered, 0 false refusals
+q10–q12  not reached
+```
+
+The floor layer needs no model and still holds independently — the fully off-domain question
+abstains at 0.0164 with the model never called. q10 and q11 returned `MODEL_DECLINED` in
+earlier runs of the same code against the same model. The README says all of this rather than
+quoting the earlier numbers as if this run had produced them.

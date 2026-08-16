@@ -449,42 +449,110 @@ SDK v3 (current)" and "Lumen SDK v2 (DEPRECATED)".
 
 ## Evaluation
 
-`eval/queries.yaml` holds 12 queries: the 5 shipped with the dataset, 4 added from the
-corpus analysis to probe near-duplicates, and 3 that are out of corpus and must be refused.
+`eval/queries.yaml` holds 16 queries: the 5 shipped with the dataset, 4 added from the
+corpus analysis to probe near-duplicates, 4 added to discriminate between retrieval modes,
+and 3 that are out of corpus and must be refused.
 
 ```bash
-pnpm eval
+pnpm eval                # retrieval, three ways
+pnpm eval --answers      # adds the abstention measurement (calls the model)
 ```
 
-With `text-embedding-3-small`:
+### Hybrid vs. vector-only vs. keyword-only
 
-| Query | Expected document at |
-|---|---|
-| q1 AppLovin size limit | rank 1 |
-| q2 SDK init / `lumen.track` | rank 1 |
-| q3 audio in a separate pass | rank 2 |
-| q4 March 2026 rejections | rank 1 |
-| q5 minimum languages | rank 1 |
-| q6 December Merge Marina | rank 4 |
-| **q7 CTA contrast rule** | **miss** |
-| q8 Meta vs Unity limits | rank 1 |
-| q9 delivery review owner | rank 1 |
+All three run the same queries with the same candidate budget and the same top-k. The
+single-arm modes read the repository directly, so no production code grows a branch that
+exists only to be benchmarked.
 
-**8/9, and all five shipped dataset queries return their expected document at rank 1.**
+| Mode | recall@6 | MRR | all expected found |
+|---|---:|---:|---:|
+| **hybrid** | **0.923** | 0.737 | **0.923** |
+| vector-only | 0.846 | 0.612 | 0.846 |
+| keyword-only | **0.923** | **0.833** | **0.923** |
 
-q7 is a query I wrote myself, and it fails for a diagnosable reason rather than a mysterious
-one. Asked *"Why does a low-contrast CTA keep coming up in delivery reports, and what is the
-rule?"*, the phrase "delivery reports" activates the 78-document cluster in **both** arms —
-all 40 candidates come back as delivery reports and `style-guide-ui.md` sits at vector rank
-69, keyword rank 86. The same document ranks **1st in both arms** for "What is the CTA
-contrast rule?". It is a multi-intent query, and the fix is query decomposition or
-reranking, both listed under [next steps](#known-limitations).
+**This table does not say what I expected it to say, and it is more useful for that.**
+
+Hybrid beats vector-only decisively — `loop_complete`, a snake_case event name occurring
+once in the corpus, is **missed entirely** by the vector arm and found at rank 1 by
+keyword. That is the failure mode embeddings have on rare literal tokens, and it is the
+reason a keyword arm exists.
+
+But keyword-only matches hybrid on recall and beats it on MRR. On *this* corpus that is a
+real result, not noise: 23k tokens of internally consistent documentation, where questions
+naturally reuse the vocabulary of the documents that answer them, is close to a best case
+for lexical matching. I deliberately wrote two paraphrase queries to find a case where
+keyword search fails — and it found both at rank 1 anyway.
+
+The MRR gap has a specific, intended cause. RRF with `k = 60` flattens the top ranks so
+that agreement between arms outweighs confidence within one, so a document keyword ranks
+1st and vectors rank 5th lands at hybrid rank 2 or 3. That is the trade the constant was
+chosen for, and it costs MRR exactly where it buys robustness.
+
+**Hybrid stays.** Not because the table endorses it, but because 13 answerable queries are
+far too few to make an architectural decision on, and because the case keyword-only fails —
+genuine paraphrase with no shared vocabulary — is real, is common in larger corpora, and is
+simply not represented here. What the table honestly supports is narrower than "hybrid is
+better": *hybrid is never worse than the better arm on recall, and it removes the vector
+arm's blind spots.* Tuning `k`, or dropping an arm, on 13 queries would be fitting a design
+to a sample.
+
+### Per query
+
+| Query | hybrid | vector | keyword | |
+|---|:--:|:--:|:--:|---|
+| q1 AppLovin size limit | 1 | 1 | 1 | |
+| q2 SDK init / `lumen.track` | 1 | 1 | 2 | |
+| q3 audio in a separate pass | 2 | 3 | 1 | |
+| q4 March 2026 rejections | 1 | 1 | 1 | |
+| q5 minimum languages | 1 | 1 | 1 | |
+| q6 December Merge Marina | 4 | 5 | 3 | near-duplicate probe |
+| **q7 CTA contrast rule** | **—** | **—** | **—** | multi-intent; see below |
+| q8 Meta vs Unity limits | 1 | 1 | 1 | |
+| q9 delivery review owner | 1 | 1 | 1 | |
+| q13 `MRAID` | 1 | 6 | 1 | rare literal token |
+| q14 `loop_complete` | 3 | **—** | 1 | rare literal token |
+| q15 audio paraphrase | 2 | 4 | 1 | |
+| q16 onboarding paraphrase | 1 | 1 | 1 | |
+
+**All five shipped dataset queries return their expected document at rank 1.**
+
+q7 is a query I wrote myself and it fails for a diagnosable reason. Asked *"Why does a
+low-contrast CTA keep coming up in delivery reports, and what is the rule?"*, the phrase
+"delivery reports" activates the 78-document cluster in **both** arms — all 40 candidates
+come back as delivery reports and `style-guide-ui.md` sits at vector rank 69, keyword rank
+86. The same document ranks **1st in both arms** for "What is the CTA contrast rule?". It is
+a multi-intent query, and the fix is query decomposition or reranking, both listed under
+[next steps](#known-limitations).
 
 Worth recording: `docs/CORPUS.md` predicted this crowding *and* pre-committed to a
 `doc_type` prior as the remedy. Measured, that would not have worked — the style guide never
 reaches fusion, so no fusion-stage rule can promote it. The prior was not added.
 
----
+### Abstention
+
+`pnpm eval --answers` measures both directions, because a system that refuses everything
+would score perfectly on out-of-corpus questions.
+
+The run was **cut short by an exhausted API balance** after 7 of 16 queries, so this is a
+partial result and is reported as one:
+
+```
+q1–q7   answered = true    7/7 answerable questions correctly answered, 0 false refusals
+q10–q12 not reached
+```
+
+The floor layer is deterministic and needs no model, and it holds independently:
+
+```
+q12  "recommended HNSW ef_construction for pgvector"
+     answered false · NO_RELEVANT_CONTEXT · top score 0.0164 · model never called
+```
+
+q10 and q11 were verified to return `answered: false · MODEL_DECLINED` in earlier runs of
+the same code against the same model; they clear the score floor at 0.0325–0.0328 because
+`company-overview.md` genuinely *is* about the company, which is the case the prompt layer
+exists to catch. Re-running `pnpm eval --answers` with credits available completes the
+table.
 
 ## Features
 
@@ -500,7 +568,7 @@ reaches fusion, so no fusion-stage rule can promote it. The prior was not added.
 - [x] MCP server over Streamable HTTP, authenticated
 - [x] OpenAPI generated from the Zod contracts
 - [x] Rate limiting
-- [x] Evaluation harness over a fixed query set
+- [x] Evaluation harness: recall@k, MRR and a vector / keyword / hybrid comparison
 - [x] **Bonus** — offline embedding provider: the whole system runs with no API key
 - [x] **Bonus** — configurable provider base URL (OpenRouter / Azure / self-hosted)
 - [x] **Bonus** — incremental re-indexing: `--watch` re-indexes on change, `--interval`
@@ -598,5 +666,5 @@ Honest list. Each of these is a decision, not an oversight.
 | `pnpm ingest [--dir <path>] [--force] [--quiet]` | Index a corpus |
 | `pnpm ingest --watch [--interval <s>]` | Keep the index current: re-index on change, and/or on a timer |
 | `pnpm ask "question" [--sources]` | Grounded answer from a terminal; `--sources` shows what the model saw |
-| `pnpm eval` | Retrieval evaluation; exits non-zero on a miss |
+| `pnpm eval [--answers] [--verbose]` | Retrieval metrics and the three-way comparison; exits non-zero on a miss |
 | `pnpm mcp` | The MCP server |

@@ -163,3 +163,56 @@ queries:
     note: >
       Fully off-domain control. Should abstain on the retrieval score floor alone, before
       the model is called — the cheap half of the two-layer abstention.
+
+  # --- added in Step 16: probes for the two failure modes hybrid exists to cover -------
+  #
+  # The nine queries above cannot distinguish vector-only from keyword-only from hybrid,
+  # because every one of them is found by *both* arms independently — measured, see the
+  # comparison table in the README. That is a property of the query set, not of retrieval,
+  # and an evaluation that cannot fail is not an evaluation.
+  #
+  # These four are deliberately chosen so that one arm is expected to struggle. They are
+  # not tuned to make hybrid look good: each names a real fact in the corpus and the
+  # expected document is the one a human would cite.
+
+  - id: q13-exact-identifier-mraid
+    source: step-16-discriminator
+    type: answerable
+    question: MRAID open handler
+    expect:
+      - network-specs-applovin.md
+    note: >
+      "MRAID" appears in exactly one document. A rare literal token with no semantic
+      neighbours is what keyword search is for and what embeddings blur — this is the
+      failure mode the vector arm alone has.
+
+  - id: q14-exact-event-name
+    source: step-16-discriminator
+    type: answerable
+    question: loop_complete
+    expect:
+      - analytics-events.md
+    note: >
+      A single snake_case event name, one occurrence in the corpus. No surrounding context
+      for a vector to work with; an exact-match arm finds it immediately.
+
+  - id: q15-paraphrase-no-shared-tokens
+    source: step-16-discriminator
+    type: answerable
+    question: Why is audio kept out of the main compression stage?
+    expect:
+      - build-pipeline.md
+    note: >
+      The document says "separate pass" and "dedicated pass"; the question says
+      "compression stage" and "kept out". Almost no lexical overlap — the failure mode the
+      keyword arm alone has, and the counterweight to q13 and q14.
+
+  - id: q16-paraphrase-onboarding
+    source: step-16-discriminator
+    type: answerable
+    question: What should a developer new to the team read first?
+    expect:
+      - onboarding-new-dev.md
+    note: >
+      Conceptual, phrased the way a person would ask rather than the way the document is
+      written. Leans on the vector arm.

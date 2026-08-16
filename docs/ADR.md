@@ -324,3 +324,49 @@ that matter live in the components that actually wait.
 
 **Note.** None of this is load-bearing for security. It decides what to *render*; the API
 independently refuses whatever the renderer gets wrong.
+
+---
+
+## ADR-013 — Hybrid retrieval is kept despite the comparison table not endorsing it
+
+**Decision.** Keep RRF over both arms, even though keyword-only matches hybrid's recall and
+beats its MRR on the evaluation set.
+
+**Rejected.** Dropping the vector arm; and separately, tuning `k` until hybrid wins.
+
+**Why.** The measurement, over 13 answerable queries at k=6:
+
+| Mode | recall@6 | MRR |
+|---|---:|---:|
+| hybrid | 0.923 | 0.737 |
+| vector-only | 0.846 | 0.612 |
+| keyword-only | 0.923 | **0.833** |
+
+Hybrid beats vector-only clearly — `loop_complete`, a snake_case event name appearing once
+in the corpus, is missed *entirely* by the vector arm and found at rank 1 by keyword. That
+is exactly the blind spot a keyword arm exists to cover.
+
+Keyword-only, though, is not beaten. On this corpus that is a real result rather than
+noise: 23k tokens of internally consistent documentation, where questions reuse the
+vocabulary of the documents that answer them, is close to a best case for lexical matching.
+Two paraphrase queries were written specifically to find a case where keyword search fails,
+and it found both at rank 1.
+
+The MRR gap has an intended cause. `k = 60` flattens the top ranks so agreement between
+arms outweighs confidence within one (ADR-004), so a document keyword ranks 1st and vectors
+rank 5th lands at hybrid rank 2 or 3. The constant was chosen for that behaviour; the table
+shows what it costs.
+
+**So why keep it.** Thirteen queries is far too small a sample to make an architectural
+decision on, and the case keyword-only fails — genuine paraphrase with no shared vocabulary
+— is real, is common in larger and less consistently written corpora, and is simply not
+represented here. Dropping an arm or retuning `k` on this evidence would be fitting the
+design to the sample, which is the same error ADR-002 refuses for chunk size.
+
+**What the table actually supports** is narrower than "hybrid is better", and that is the
+claim worth making: *hybrid is never worse than the better arm on recall, and it removes
+the vector arm's blind spots.*
+
+**Consequence.** The comparison is in the README rather than only in this file, including
+the row that does not flatter the design. An evaluation that only ever confirms the choice
+already made is decoration.

@@ -3,9 +3,9 @@
 Single source of truth for progress. Claude Code updates this at the end of every
 step, before writing the completion report. Read it at the start of every session.
 
-**Current step:** bonuses — 16, 17, 18, 19 remain
-**Last completed step:** 15 — Self-updating ingestion
-**Last commit:** `9d81d38` · Step 15 pending
+**Current step:** bonuses — 17, 18, 19 remain
+**Last completed step:** 16 — Evaluation harness
+**Last commit:** `2ec329f` · Step 16 pending
 
 | Step | Commit |
 |---|---|
@@ -24,6 +24,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 12 — Dashboard | `8636ecc` |
 | 13 — MCP server | `85e2192` |
 | 14 — Documentation | `9d81d38` |
+| 15 — Self-updating ingestion | `2ec329f` |
 
 > **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
 > the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
@@ -59,7 +60,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 13 | MCP server | P0 | ✅ done |
 | 14 | Documentation | P0 | ✅ done |
 | 15 | Self-updating ingestion | P2 | ✅ done |
-| 16 | Evaluation harness | P2 | ⬜ |
+| 16 | Evaluation harness | P2 | ✅ done |
 | 17 | OIDC for MCP | P2 | ⬜ |
 | 18 | Live deployment | P2 | ⬜ |
 | 19 | Polish | P2 | ⬜ |
@@ -97,6 +98,12 @@ substantial ones into `docs/ADR.md`.
 | 3 | `POST /ingest` does **not** accept a corpus directory from the client | It would let an authenticated admin walk any directory the API process can read — path traversal dressed up as a feature. The directory comes from `CORPUS_DIR` on the server. |
 | 3 | Auth responses carry no tokens in the body | Access and refresh JWTs travel in httpOnly cookies; returning them in the body hands back exactly what the cookie flag exists to withhold. |
 | 3 | `Citation` carries both `marker` and `sourceIndex` | The server drops citation markers that do not match the supplied context, after which the surviving markers are no longer contiguous. The UI has to resolve what the model actually wrote, not what it should have written. |
+| 16 | **The comparison table does not endorse hybrid, and it is published anyway** | Measured over 13 answerable queries: hybrid recall 0.923 / MRR 0.737, vector 0.846 / 0.612, keyword **0.923 / 0.833**. Hybrid beats vector decisively (`loop_complete` is missed *entirely* by the vector arm) but keyword-only matches its recall and beats its MRR. Hybrid stays because 13 queries is far too small to make an architectural decision on and because the case keyword fails — true paraphrase with no shared vocabulary — is real and unrepresented here. See `docs/ADR.md` ADR-013. |
+| 16 | The MRR gap is the `k = 60` trade showing its cost | RRF flattens the top ranks so agreement beats confidence, so a document keyword ranks 1st and vectors rank 5th lands at hybrid 2–3. That is what the constant was chosen for; the table shows the price. Not retuned — 13 queries is a sample, not evidence. |
+| 16 | Four discriminating queries added to `eval/queries.yaml` | The original nine could not distinguish the three modes at all: every one was found by *both* arms independently. An evaluation that cannot fail is not an evaluation. The new ones probe rare literal tokens (`MRAID`, `loop_complete` — one occurrence each) and paraphrase. |
+| 16 | Single-arm modes read the repository directly, not a "disable one arm" flag in `retrieve()` | The shipped path does not grow a branch that exists only to be benchmarked. Same SQL either way, same candidate budget, same top-k — the comparison is between ranking strategies, not between how much each was allowed to look at. |
+| 16 | Abstention measures **both** directions | A system that refuses everything scores perfectly on out-of-corpus questions. False refusals on answerable questions are counted alongside; the pair is the result. |
+| 16 | `--answers` is opt-in | Twelve generations cost real money and take half a minute. The floor layer is deterministic and free, so it is measured on every run. |
 | 15 | The watcher reports *that* something changed, not *what* | Ingesting only the changed file would be faster in theory and wrong in practice: a rename is a delete plus a create, an editor's atomic save is a temp file plus a rename, and `git checkout` changes many files at once. A full incremental pass costs ~0.1s because unchanged documents are skipped by hash, and it is correct for all of those cases. |
 | 15 | Debounce and no-overlap live in a **scheduler with no filesystem**, separate from chokidar | Both rules are about timing, so testing them through a real watcher would mean real waiting and real flakiness. Split out, they are 8 tests with fake timers. Measured on the real thing anyway: 5 files touched at once collapsed to exactly **1** run. |
 | 15 | A change arriving mid-run queues **one** follow-up, not one per change | Ingestion replaces a document's chunks wholesale, so overlapping runs would interleave deletes and inserts on the same rows. Dropping the change instead would leave the index stale until an unrelated edit; queueing one covers any number of changes, because each pass re-classifies the whole corpus. |
@@ -308,7 +315,10 @@ anything manual.
 - `pnpm ask "question" [--k 6] [--sources] [--no-stream]` runs the full answer path from a
   terminal. `--sources` prints what the model was actually shown, which is the only way to tell
   a retrieval failure from a generation failure.
-- rag deps: gpt-tokenizer 3.4.0 (cl100k_base) · vitest 4.1.10
+- rag deps: gpt-tokenizer 3.4.0 (cl100k_base) · vitest 4.1.10 · chokidar 4
+- ⚠ **The OpenRouter key is on the free tier and its balance ran out** during Step 16's
+  `pnpm eval --answers` run, after 7 of 16 queries. Retrieval measurement needs no credits;
+  completing the abstention table does.
 - api deps: drizzle-orm 0.45.2 · zod 4.4.3 · tsx 4.23.12 · yaml 2.7.0 (ingest + eval CLIs)
 - `pnpm eval` runs `eval/queries.yaml` against live retrieval and exits non-zero if an
   answerable query misses an expected document. `--k`, `--file` and `--verbose` are supported.
