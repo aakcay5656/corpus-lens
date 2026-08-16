@@ -1048,3 +1048,70 @@ a 404 that answered 200, an ORM error message containing the whole SQL statement
 echoed into the database, a keyword arm that silently returned nothing, a dummy hash that
 defeated the timing attack it was written to prevent — every one of them was found by running
 the thing and looking at the output, and not one of them by reading the code again.
+
+---
+
+### Step 15 — Self-updating ingestion (bonus)
+
+- **AI did:** wrote the scheduler, the chokidar watcher, the `--watch` and `--interval` CLI
+  flags and 8 tests; then ran it against a scratch corpus and watched it react to real edits,
+  additions, deletions and a simultaneous burst.
+- **I wrote/rewrote:** the split between the two files. The obvious shape is one module that
+  watches and runs. But the parts worth getting right — debounce a burst into one run, never let
+  two runs overlap, queue exactly one follow-up if a change arrives mid-run — are all *timing*
+  rules, and testing timing through a real filesystem watcher means real waiting and real
+  flakiness. Pulled into a scheduler with no filesystem and no database, they became 8 tests
+  with fake timers that run in 100ms. The watcher on the other side is thin enough to read in
+  one go.
+- **Got it wrong:** nothing in the feature — but I destroyed the working index while testing it,
+  and the way that happened is worth recording.
+
+  My test script truncated the tables before pointing the watcher at a 3-document scratch
+  directory. The truncate failed silently, because the clean-clone exercise in Step 14 had left
+  Postgres running under a *different* compose project, so `docker compose exec` from this
+  directory could not find the service — and I had sent its stderr to `/dev/null`. The container
+  was up and reachable on the same port, so ingestion worked fine; it simply ran against the
+  full 142-document index while looking at a folder containing three files, and correctly
+  removed the other 139.
+
+  The product behaved exactly as designed. The mistake was mine, twice over: silencing stderr on
+  a command whose failure I was depending on, and assuming a container is the container I think
+  it is because it answers on the expected port. That second one is the Step 1 Docker-context
+  lesson arriving again in a different costume.
+
+- **How I caught it:** the summary said `unchanged 3` when I had just emptied the table, and
+  those two facts cannot both be true. Reading the full log rather than the four lines I had
+  grepped for showed `removed 139` immediately.
+
+**A real bug found along the way.** `ingestion_runs.trigger` was written as
+`trigger === "API" ? "API" : "CLI"`, so every automatic re-index would have been recorded as
+someone running the command by hand. The enum has carried `WATCH` and `SCHEDULE` since Step 2
+and nothing had ever honoured them — the schema was written for this feature ten steps before
+the feature existed, and the store quietly discarded the distinction. It matters because the
+dashboard's entire purpose is telling an operator what happened while they were not watching,
+and "a run happened" is much less useful than "a run happened *because a file changed*".
+
+**Measured against a real directory, not only with fake timers:**
+
+```
+startup                    3 discovered · 3 unchanged · watcher ready
+edit one file              3 discovered · 1 updated  · 2 unchanged
+add a file                 4 discovered · 1 added    · 3 unchanged
+delete a file              3 discovered · 1 removed
+touch 5 files at once      → 1 run (not 5) · 3 updated
+--interval 5, ~18s         → 3 SCHEDULE runs
+Ctrl-C during operation    → 0 rows left at status RUNNING
+
+ingestion_runs by trigger: WATCH 5 · SCHEDULE 3 · CLI 2
+```
+
+The burst line is the one the debounce exists for, and the last line is the bug above, fixed
+and visible.
+
+**What this does not do.** It re-classifies the whole corpus on every trigger rather than
+ingesting just the file that changed. That is deliberate: a rename is a delete plus a create, an
+editor's atomic save is a temp file plus a rename, and `git checkout` changes many files at
+once — the path-level optimisation is wrong for all three, while a full pass costs about a tenth
+of a second here because unchanged documents are skipped by hash without being re-embedded. On a
+corpus large enough for that to hurt, the classification is already the right place to add a
+path filter; the watcher would not need to change.

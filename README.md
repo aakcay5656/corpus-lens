@@ -32,7 +32,8 @@ passage behind every claim, and says "not in the corpus" rather than guessing.
 
 **Ingest.** Walks a directory of Markdown, chunks it on heading structure, embeds each
 chunk, and stores documents, chunks, vectors and a full-text index in one Postgres
-database. Re-running is cheap: unchanged files are skipped by content hash.
+database. Re-running is cheap: unchanged files are skipped by content hash, so
+`pnpm ingest --watch` can keep the index current as documents change.
 
 **Search.** Hybrid retrieval — vector similarity *and* Postgres full-text search, fused
 with Reciprocal Rank Fusion.
@@ -502,8 +503,8 @@ reaches fusion, so no fusion-stage rule can promote it. The prior was not added.
 - [x] Evaluation harness over a fixed query set
 - [x] **Bonus** — offline embedding provider: the whole system runs with no API key
 - [x] **Bonus** — configurable provider base URL (OpenRouter / Azure / self-hosted)
-- [ ] **Bonus** — incremental re-indexing with a file watcher (hash comparison is done; the
-      watcher is not)
+- [x] **Bonus** — incremental re-indexing: `--watch` re-indexes on change, `--interval`
+      on a timer; both re-embed only what changed
 - [ ] **Bonus** — OIDC for the MCP server (the transport and the `WWW-Authenticate` hook are
       in place)
 - [ ] **Bonus** — live deployment
@@ -595,6 +596,7 @@ Honest list. Each of these is a decision, not an oversight.
 | `pnpm build` · `pnpm typecheck` · `pnpm test` · `pnpm lint` | 118 tests |
 | `pnpm db:migrate` · `pnpm db:seed` · `pnpm db:studio` | Schema, demo users, Drizzle Studio |
 | `pnpm ingest [--dir <path>] [--force] [--quiet]` | Index a corpus |
+| `pnpm ingest --watch [--interval <s>]` | Keep the index current: re-index on change, and/or on a timer |
 | `pnpm ask "question" [--sources]` | Grounded answer from a terminal; `--sources` shows what the model saw |
 | `pnpm eval` | Retrieval evaluation; exits non-zero on a miss |
 | `pnpm mcp` | The MCP server |

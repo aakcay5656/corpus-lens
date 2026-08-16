@@ -65,6 +65,13 @@ function toStoreError(error: unknown): Error {
   return new Error("database operation failed");
 }
 
+const TRIGGERS = ["CLI", "API", "WATCH", "SCHEDULE"] as const;
+type Trigger = (typeof TRIGGERS)[number];
+
+function toTrigger(value: string): Trigger {
+  return (TRIGGERS as readonly string[]).includes(value) ? (value as Trigger) : "CLI";
+}
+
 /**
  * Normalises a corpus date string for a Postgres `date` column.
  *
@@ -86,8 +93,12 @@ function rawStore(db: Database): IngestionStore {
         .insert(ingestionRuns)
         .values({
           corpusDir: input.corpusDir,
-          // The pipeline is provider-agnostic about the trigger; the enum lives here.
-          trigger: input.trigger === "API" ? "API" : "CLI",
+          // The pipeline treats the trigger as an opaque string; the enum lives here.
+          // Validated against the enum's values rather than mapped with a ternary — the
+          // earlier version collapsed WATCH and SCHEDULE into CLI, so an automatic
+          // re-index was indistinguishable from someone running the command by hand,
+          // which is exactly the distinction the dashboard needs to show.
+          trigger: toTrigger(input.trigger),
         })
         .returning({ id: ingestionRuns.id });
 

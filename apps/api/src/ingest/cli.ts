@@ -2,8 +2,10 @@ import { existsSync, statSync } from "node:fs";
 import { parseArgs } from "node:util";
 
 import { createDatabase } from "@corpus-lens/db/client";
+import { watchCorpus } from "@corpus-lens/rag/corpus-watcher";
 import { createEmbeddingProvider } from "@corpus-lens/rag/embedding-provider-factory";
 import { createFilesystemCorpusSource } from "@corpus-lens/rag/filesystem-corpus-source";
+import { createIngestionScheduler } from "@corpus-lens/rag/ingestion-scheduler";
 import {
   runIngestion,
   type IngestionEvent,
@@ -15,7 +17,7 @@ import { createDrizzleIngestionStore } from "./drizzle-ingestion-store";
 import { ingestEnv, resolveCorpusDir } from "../config/env";
 
 /**
- * `pnpm ingest [--dir <path>] [--force] [--quiet]`
+ * `pnpm ingest [--dir <path>] [--force] [--quiet] [--watch] [--interval <seconds>]`
  *
  * The composition root for ingestion: it is the only file that knows about the corpus
  * directory, the database and the embedding provider at the same time. Everything it
@@ -28,6 +30,8 @@ async function main(): Promise<void> {
       dir: { type: "string" },
       force: { type: "boolean", default: false },
       quiet: { type: "boolean", default: false },
+      watch: { type: "boolean", default: false },
+      interval: { type: "string" },
     },
     // parseArgs throws on an unknown flag by default, which is what we want: a silently
     // ignored --forse would look like a run that refused to re-embed.
@@ -41,6 +45,23 @@ async function main(): Promise<void> {
         "Set CORPUS_DIR in .env or pass --dir. The sample corpus is not in the repository; " +
         "see the README for where to place it.",
     );
+  }
+
+  if (values.force === true && values.watch === true) {
+    // Refused rather than warned. --force re-embeds every document, and doing that on
+    // every save would spend the entire corpus's embedding cost per keystroke-ish burst.
+    throw new Error(
+      "--force cannot be combined with --watch: it would re-embed the whole corpus on every change.",
+    );
+  }
+
+  const intervalSeconds =
+    values.interval === undefined ? undefined : Number.parseInt(values.interval, 10);
+  if (
+    intervalSeconds !== undefined &&
+    (!Number.isInteger(intervalSeconds) || intervalSeconds < 5)
+  ) {
+    throw new Error("--interval must be an integer number of seconds, at least 5.");
   }
 
   const provider = createEmbeddingProvider({
@@ -63,27 +84,92 @@ async function main(): Promise<void> {
 
   const { db, close } = createDatabase({ url: ingestEnv.DATABASE_URL, maxConnections: 4 });
 
-  try {
+  const ingestOnce = async (trigger: string): Promise<number> => {
     const summary = await runIngestion({
       source: createFilesystemCorpusSource({ rootDir: corpusDir }),
       store: createDrizzleIngestionStore(db),
       embeddingProvider: provider,
       tokenCounter: createTokenCounter(),
-      trigger: "CLI",
+      trigger,
       force: values.force,
       onProgress: values.quiet === true ? undefined : printProgress,
     });
-
     printSummary(summary);
+    return summary.documentsFailed;
+  };
 
-    // A run that completed with failed documents is still a failed *command*: a CI job or
-    // a README follower should not read "done" and move on with an incomplete index.
-    if (summary.documentsFailed > 0) process.exitCode = 1;
+  try {
+    // One pass up front in every mode. In watch mode this is what handles whatever
+    // changed while the process was not running — the watcher deliberately ignores the
+    // initial scan, so without this a restart would leave edits unindexed until the next
+    // one.
+    const failed = await ingestOnce(values.watch === true ? "WATCH" : "CLI");
+
+    if (values.watch !== true && intervalSeconds === undefined) {
+      // A run that completed with failed documents is still a failed *command*: a CI job
+      // or a README follower should not read "done" and move on with an incomplete index.
+      if (failed > 0) process.exitCode = 1;
+      return;
+    }
+
+    await runContinuously({ corpusDir, ingestOnce, watch: values.watch === true, intervalSeconds });
   } finally {
     // In a finally block so a thrown error still releases the pool; otherwise the process
     // hangs on an open connection instead of reporting the failure.
     await close();
   }
+}
+
+/**
+ * Watch and/or interval mode: stays running until interrupted.
+ *
+ * The scheduler owns the two rules that make this safe — debounce a burst of filesystem
+ * events into one run, and never let two runs overlap. Neither belongs in the watcher,
+ * which is why they are testable without a filesystem.
+ */
+async function runContinuously(options: {
+  corpusDir: string;
+  ingestOnce: (trigger: string) => Promise<number>;
+  watch: boolean;
+  intervalSeconds: number | undefined;
+}): Promise<void> {
+  const scheduler = createIngestionScheduler({
+    run: async (trigger) => {
+      console.log(`\n[${new Date().toISOString()}] ${trigger} run`);
+      await options.ingestOnce(trigger);
+    },
+    onError: (error) => {
+      console.error(`run failed: ${error instanceof Error ? error.message : String(error)}`);
+    },
+  });
+
+  const watcher =
+    options.watch === true
+      ? watchCorpus({
+          rootDir: options.corpusDir,
+          onChange: () => scheduler.notify(),
+          onReady: () => console.log(`\nwatching ${options.corpusDir} for changes`),
+        })
+      : undefined;
+
+  if (options.intervalSeconds !== undefined) {
+    scheduler.startInterval(options.intervalSeconds * 1000);
+    console.log(`scheduled re-index every ${options.intervalSeconds}s`);
+  }
+
+  await new Promise<void>((resolve) => {
+    const shutdown = (): void => {
+      console.log("\nstopping…");
+      void (async () => {
+        await watcher?.close();
+        // Awaited: a run in flight finishes rather than leaving its row stuck at RUNNING.
+        await scheduler.stop();
+        resolve();
+      })();
+    };
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+  });
 }
 
 function printProgress(event: IngestionEvent): void {

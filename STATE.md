@@ -3,9 +3,9 @@
 Single source of truth for progress. Claude Code updates this at the end of every
 step, before writing the completion report. Read it at the start of every session.
 
-**Current step:** all P0 steps complete — bonuses (15–19) remain
-**Last completed step:** 14 — Documentation
-**Last commit:** `85e2192` · Step 14 pending
+**Current step:** bonuses — 16, 17, 18, 19 remain
+**Last completed step:** 15 — Self-updating ingestion
+**Last commit:** `9d81d38` · Step 15 pending
 
 | Step | Commit |
 |---|---|
@@ -23,6 +23,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 11 — Chat page | `c119f58` |
 | 12 — Dashboard | `8636ecc` |
 | 13 — MCP server | `85e2192` |
+| 14 — Documentation | `9d81d38` |
 
 > **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
 > the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
@@ -57,7 +58,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 12 | Dashboard | P0 | ✅ done |
 | 13 | MCP server | P0 | ✅ done |
 | 14 | Documentation | P0 | ✅ done |
-| 15 | Self-updating ingestion | P2 | ⬜ |
+| 15 | Self-updating ingestion | P2 | ✅ done |
 | 16 | Evaluation harness | P2 | ⬜ |
 | 17 | OIDC for MCP | P2 | ⬜ |
 | 18 | Live deployment | P2 | ⬜ |
@@ -96,6 +97,12 @@ substantial ones into `docs/ADR.md`.
 | 3 | `POST /ingest` does **not** accept a corpus directory from the client | It would let an authenticated admin walk any directory the API process can read — path traversal dressed up as a feature. The directory comes from `CORPUS_DIR` on the server. |
 | 3 | Auth responses carry no tokens in the body | Access and refresh JWTs travel in httpOnly cookies; returning them in the body hands back exactly what the cookie flag exists to withhold. |
 | 3 | `Citation` carries both `marker` and `sourceIndex` | The server drops citation markers that do not match the supplied context, after which the surviving markers are no longer contiguous. The UI has to resolve what the model actually wrote, not what it should have written. |
+| 15 | The watcher reports *that* something changed, not *what* | Ingesting only the changed file would be faster in theory and wrong in practice: a rename is a delete plus a create, an editor's atomic save is a temp file plus a rename, and `git checkout` changes many files at once. A full incremental pass costs ~0.1s because unchanged documents are skipped by hash, and it is correct for all of those cases. |
+| 15 | Debounce and no-overlap live in a **scheduler with no filesystem**, separate from chokidar | Both rules are about timing, so testing them through a real watcher would mean real waiting and real flakiness. Split out, they are 8 tests with fake timers. Measured on the real thing anyway: 5 files touched at once collapsed to exactly **1** run. |
+| 15 | A change arriving mid-run queues **one** follow-up, not one per change | Ingestion replaces a document's chunks wholesale, so overlapping runs would interleave deletes and inserts on the same rows. Dropping the change instead would leave the index stale until an unrelated edit; queueing one covers any number of changes, because each pass re-classifies the whole corpus. |
+| 15 | `--force` is **refused** with `--watch` | Force re-embeds every document. On every save that is the entire corpus's embedding cost per burst. |
+| 15 | Watch mode does one pass **before** starting the watcher, and chokidar's initial scan is ignored | Otherwise a restart leaves whatever changed while the process was down unindexed until the next unrelated edit — and letting chokidar emit `add` for every existing file would trigger a run before anything had actually changed. |
+| 15 | `ingestion_runs.trigger` now records `WATCH` and `SCHEDULE` | **Bug fixed here.** The store mapped `trigger === "API" ? "API" : "CLI"`, so every automatic re-index was recorded as a manual one — the enum has had all four values since Step 2 and nothing honoured them. The dashboard's whole point is telling an operator what happened without them being present. |
 | 14 | `packages/shared` emits **both** CJS and ESM | It is consumed two ways: by CommonJS Node processes and by a bundler. CJS-only broke `pnpm dev` for the web app — webpack applies its React Refresh transform to a workspace package's output and that transform emits `import.meta`, a parse error inside a CommonJS file. Production was unaffected because Refresh is dev-only, which is why it survived until the README was executed end to end. The ESM output is bundler-only and never loaded by Node, which is why extensionless relative imports are safe in it. |
 | 14 | `transpilePackages` removed from `next.config.mjs` | It was there on the theory that it saved building the packages first. That was never true — the `exports` map points at `dist/` — and it made Next treat built output as first-party source. |
 | 14 | `pnpm build` added to the documented setup sequence | Found by running the README on a clean clone: `pnpm ingest` failed with `Cannot find module .../@corpus-lens/db/dist/client.js`. The packages are consumed through `dist/`, which does not exist on a fresh checkout. |
@@ -247,8 +254,6 @@ What was dropped and why. All of this is in the README's limitations section.
 
 - **Query decomposition for multi-intent questions.** The one measured retrieval failure
   (eval `q7`). Deferred to Step 19; the diagnosis is in the README and `docs/ADR.md`.
-- **Chokidar watch mode for ingestion** (Step 15). The hash-based new/changed/removed
-  classification is done and used; only the watcher and scheduler are missing.
 - **OIDC for the MCP server** (Step 17). The transport was chosen for it and the 401 already
   returns `WWW-Authenticate`; the bearer check is one file.
 - **Live deployment** (Step 18). The README documents what it would take.
