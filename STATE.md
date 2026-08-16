@@ -32,17 +32,6 @@ user management done; LLM reranking not shipped, see ADR-022)
 | 19a — offline answering, cost, logo | `7cffb26` `9b2c49f` `5ce880a` `464610e` |
 | 19b — security review fixes | `8fe5ddc` |
 
-> **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
-> the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
-> the wrong commit — leaving Steps 1 and 2 squashed together. The history was rewritten
-> from the root (nothing had been pushed): both commits now carry zero forbidden files,
-> verified with `git ls-tree`. Steps 1 and 2 were left as one commit rather than split,
-> because a reconstructed Step 1 commit would not compile — `apps/api` already imports
-> `@corpus-lens/db/client`. The commit message describes both steps honestly instead.
->
-> Remaining cleanup, whenever convenient: `git branch -D backup-before-rewrite` then
-> `git reflog expire --expire=now --all && git gc --prune=now`. Until then the old dirty
-> commits are still reachable from that backup branch.
 
 ---
 
