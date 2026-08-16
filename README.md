@@ -346,7 +346,14 @@ is in the MCP README. `USER` is sufficient. The server verifies it against the *
 account stops working immediately rather than when the token expires. Authentication runs
 *before* the MCP handshake, so tool names are not enumerable without a token.
 
-Tools: `search_corpus(query, topK, docType)` and `get_document(id)`.
+Tools: `search_corpus(query, topK, docType)` for any authenticated caller, and
+`get_document(id)` for an **ADMIN** only — it returns a document's entire text, which is
+what `GET /documents/:id` restricts to admins on the API. The tool list is built per
+request from the caller's role, so a `USER` is not shown a tool they may not call.
+
+Requests are rate-limited to 60 a minute **per caller id** rather than per address: the
+caller is already authenticated by the time the limit is consulted, and `search_corpus`
+spends an embedding call exactly like `POST /search` does.
 
 **OIDC** is supported as an alternative: `MCP_AUTH_MODE=oidc` validates tokens against an
 identity provider's JWKS, checking issuer, audience, expiry and pinned algorithms, and
@@ -466,7 +473,14 @@ SDK v3 (current)" and "Lumen SDK v2 (DEPRECATED)".
   is authenticated by default
 - Every bound in one module: query length, `topK` 1–20, page size, password length. An
   unbounded `topK` is a denial-of-service against the LLM bill
-- Rate limiting: 120/min global, 30/min on `/search`, 10/min on `/answer`
+- Rate limiting: 120/min global, 30/min on `/search`, 10/min on `/answer`, 10/min on
+  `/auth/login` and `/auth/register`, and 60/min per **caller** on the MCP endpoint. The
+  login limit is the one that matters: 120 guesses a minute against a known email is a
+  working online brute force, and the global ceiling alone would have allowed it
+- **The MCP server enforces roles, not just authentication.** `get_document` returns a
+  document's whole text, which on the API is an `@Roles("ADMIN")` route, so it is
+  registered only for an admin caller — a `USER` does not see it in `tools/list` and cannot
+  invoke it. A second front door must not grant more than the first
 - The exception filter never uses an unrecognised exception's message — an ORM message can
   be an entire SQL statement, and a provider error body was found echoing an API key back
 - `POST /ingest` does not accept a corpus directory from the client; that would be path

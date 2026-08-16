@@ -12,6 +12,8 @@ import { inArray, like } from "drizzle-orm";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { ThrottlerStorage } from "@nestjs/throttler";
+
 import { AppModule } from "../app.module";
 import { apiEnv } from "../config/env";
 import { DATABASE } from "../database/database.module";
@@ -62,7 +64,31 @@ beforeAll(async () => {
   const moduleRef = await Test.createTestingModule({
     imports: [AppModule],
     controllers: [FixtureController],
-  }).compile();
+  })
+    // The rate limiter is neutralised *for this suite only*. It logs in more than ten times
+    // in under a minute, which is exactly what `/auth/login`'s throttle is there to stop —
+    // so leaving it on makes these tests fail for a reason that has nothing to do with what
+    // they assert. The throttle itself is verified in login-throttle.e2e.test.ts against an
+    // app that keeps the real thing.
+    //
+    // The *storage* is replaced rather than the guard. `AppThrottlerGuard` is registered
+    // under the `APP_GUARD` token with `useClass`, so the class itself is not a provider
+    // token and `overrideGuard` silently matches nothing — which is how this was found,
+    // with the override in place and the suite still returning 429.
+    .overrideProvider(ThrottlerStorage)
+    .useValue({
+      // The record shape the guard reads. Written out rather than imported: the package
+      // exports the `ThrottlerStorage` token from its entry point but not the record type,
+      // and reaching into `dist/` for a type is worse than four fields.
+      increment: (): Promise<{
+        totalHits: number;
+        timeToExpire: number;
+        isBlocked: boolean;
+        timeToBlockExpire: number;
+      }> =>
+        Promise.resolve({ totalHits: 1, timeToExpire: 60, isBlocked: false, timeToBlockExpire: 0 }),
+    })
+    .compile();
 
   app = moduleRef.createNestApplication();
   app.use(cookieParser());

@@ -520,3 +520,54 @@ rather than silent: `answerMode` on the response says which answerer produced th
 chat page labels an extractive answer, and the switch is logged as a warning. Measured on
 an exhausted account: request 1 attempts the hosted model and falls back, requests 2 and 3
 go straight to the offline answerer, and exactly **one** warning appears in the log.
+
+---
+
+## ADR-018 — The MCP server authorises by role, and rate-limits by caller
+
+**Decision.** `get_document` is registered only for an `ADMIN` caller, and the MCP endpoint
+allows 60 requests a minute keyed on the authenticated caller id. `/auth/login` and
+`/auth/register` get their own 10/minute throttle, well under the global 120.
+
+**Rejected.** Authenticating the MCP caller and serving every tool regardless of role;
+relying on the global rate limit for login; a per-account lockout.
+
+**What was wrong.** The MCP server checked *who* a caller was and then ignored it —
+`ToolDependencies.caller` was passed in and never read. `get_document` returns a document's
+entire text reassembled from its chunks, which on the REST side is `GET /documents/:id`
+behind `@Roles("ADMIN")`. So a `USER` token, which the API answers with 403, could read the
+same content through the MCP tool. Authentication is not authorisation, and the "second
+front door" argument that made this server authenticate at all applies just as directly to
+what it serves once the door is open.
+
+**Absent, not refusing.** The role decides what `tools/list` contains rather than what the
+handler does with a call, because a tool a caller may not invoke is information about the
+system they have no claim to — the same reasoning that already kept an unauthenticated
+caller from enumerating tool names. The handler re-checks anyway: the registration guard is
+a decision made once at construction, and the second check is what survives a later
+refactor that registers the tools before knowing who is calling.
+
+**Why the limit is keyed on the caller, not the IP.** The API throttles on address because
+it serves browsers and has no identity before its guards run. The MCP server authenticates
+*first*, so the caller id is available and is the better key: one account behind a shared
+NAT is one budget, and evading it costs an account rather than an address — and
+registration is admin-only. The budget is 60/minute rather than the API's 30 for search
+because MCP is chattier per user action (initialise, list, call) and the count is per HTTP
+request.
+
+**Why login needed its own limit.** The global ceiling of 120/minute is a reasonable bound
+on ordinary traffic and useless against the one endpoint where repetition *is* the attack:
+120 guesses a minute against a known email is a working online brute force. Ten is generous
+for a mistyped password and hostile to a script. Constant-time behaviour and a single error
+message already close enumeration (ADR-008); this closes the rate.
+
+**What is deliberately not built.** The throttle keys on IP, so a distributed attacker gets
+ten guesses per address. Closing that means a per-account counter with lockout, which
+introduces a denial-of-service of its own — anyone who knows an email can lock its owner
+out — and the mitigation for *that* (progressive delays, unlock links, an out-of-band
+channel) is a feature, not a line of code. Bounded and named here rather than half-built.
+
+**Limitation, stated.** Both limiters are in-process. Two API replicas or two MCP instances
+each keep their own counter, so the effective limit multiplies by replica count. The fix is
+a shared store, which CLAUDE.md §3 rules out for this build; it is listed under known
+limitations in the README rather than pretended away.

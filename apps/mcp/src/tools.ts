@@ -29,6 +29,18 @@ import { type McpCaller } from "./authenticate";
  * Bounds come from the shared limits module for the same reason they do on the API: an
  * unbounded `topK` is a denial-of-service vector against the embedding bill (CLAUDE.md
  * §9), and an MCP client is not a friendlier caller than a browser.
+ *
+ * **The tools a caller sees depend on who they are**, and that is a fix rather than a
+ * flourish. `get_document` returns a document's entire text — which on the REST side is
+ * `GET /documents/:id`, an `@Roles("ADMIN")` route. Authenticating the MCP caller and then
+ * serving every tool regardless of role made this server a way for a `USER` to read exactly
+ * what the API refuses them: the second front door granted more than the first. A `USER`
+ * may search and cite passages, which is the capability the role model gives them.
+ *
+ * Registration is per request, because `main.ts` builds a server per request with the
+ * caller already resolved. So the role decides what `tools/list` even contains — an
+ * unauthorised tool is absent rather than present-and-refusing, which is the same reasoning
+ * that keeps an unauthenticated caller from enumerating tool names at all.
  */
 export interface ToolDependencies {
   db: Database;
@@ -38,8 +50,11 @@ export interface ToolDependencies {
 }
 
 export function registerTools(server: McpServer, deps: ToolDependencies): void {
+  // Available to any authenticated caller: retrieval is what `USER` is for.
   registerSearchCorpus(server, deps);
-  registerGetDocument(server, deps);
+
+  // Whole-document read, mirroring the API's admin-only document routes.
+  if (deps.caller.role === "ADMIN") registerGetDocument(server, deps);
 }
 
 function registerSearchCorpus(server: McpServer, deps: ToolDependencies): void {
@@ -136,6 +151,17 @@ function registerGetDocument(server: McpServer, deps: ToolDependencies): void {
       },
     },
     async ({ id }) => {
+      // Checked again here, even though a non-admin never gets this tool registered. The
+      // guard above is a decision made in one place at construction time; this one survives
+      // a later refactor that registers the tools unconditionally, which is precisely the
+      // mistake being corrected. It is four lines to make the rule true at the point of use.
+      if (deps.caller.role !== "ADMIN") {
+        return {
+          isError: true,
+          content: [{ type: "text" as const, text: "This tool requires an administrator." }],
+        };
+      }
+
       const document = await deps.db.query.documents.findFirst({
         where: eq(documents.id, id),
       });

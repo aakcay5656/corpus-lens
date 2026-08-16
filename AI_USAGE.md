@@ -1,1363 +1,366 @@
 # AI Usage Log
 
-An honest record of where AI assistance was used on this case, what it produced, what I
-wrote or rewrote myself, and where it was wrong. Written as the work happened, one entry
-per step.
+An honest record of what I had AI do, what I did myself, where it got things wrong, and how
+each one surfaced.
 
-Tool: Claude Code (Opus), driven one step at a time against `PLAN.md`, with a working
-agreement in `CLAUDE.md` that requires the model to stop after each step for review.
+**Tool and method.** Claude Code (Opus), driven one step at a time against `PLAN.md`. The
+stack and its justification, the repository layout, the RAG rules (breadcrumbs, RRF, the
+two-layer abstention) and the security requirements were fixed by me in `CLAUDE.md` *before*
+any code existed — the assistant implemented against that document, it did not choose it.
+Each step ended with a stop: I read the diff, ran the verify commands myself, and either
+replied `go` or sent it back. **I ran every commit.** Design reasoning lives in
+[`docs/ADR.md`](docs/ADR.md); this file is the working record.
+
+Per step below, **AI** is what the assistant produced and **Me** is what I directed, changed,
+or refused. Where I only reviewed, it says so — claiming a rewrite that did not happen would
+make the rest of this file worth less.
+
+**The pattern worth noticing:** the compiler, the linter and the test suite were green for
+almost every defect below. One was caught by the type system. The rest were found by running
+the thing and reading the output.
 
 ---
 
 ### Step 0 — Corpus recon
 
-- **AI did:** enumerated `sample_dataset/corpus/` and read every root document plus samples
-  from each subfolder; ran the measurement scripts (token distribution by document and by
-  `##` section, heading-depth census, front-matter/table/code-fence checks, duplicate-line
-  counts); drafted `docs/CORPUS.md` and `eval/queries.yaml`.
-- **I wrote/rewrote:** the chunking decision itself. The model initially framed the options
-  as a straight choice between one-chunk-per-document and one-chunk-per-`##` section. Both
-  are overfitted to a 23k-token sample and would have violated the "point ingestion at any
-  directory" requirement, so I directed it to the split-then-merge design instead — the
-  chunker implements the general strategy and this corpus simply resolves to the merge path.
-  That framing, and the decision to leave the budget at 500 rather than tuning it down to
-  the observed ~200, are mine.
-- **Got it wrong:** the model's first pass reported the corpus as "142 files, ~596 KB" and
-  moved straight to proposing chunk parameters — it had not yet measured section-level sizes
-  or checked for duplication, so the proposal was resting on file counts alone. It also
-  initially recorded the ingest path as `./sample_dataset` (copied from `STATE.md`) when the
-  corpus actually lives in `./sample_dataset/corpus`, with `sample_questions.md` a sibling
-  that must not be ingested.
-- **How I caught it:** I asked for the distribution before the recommendation. The
-  duplicate-line count — 546 bullet lines across `delivery-reports/`, only **15 distinct** —
-  only surfaced because of that, and it turned out to be the most important finding in the
-  step: it means the retrieval risk here is near-duplicate chunks, not chunk size, and it is
-  what drove the decision to put `doc_type · date · subject` into the breadcrumb. The path
-  error surfaced when listing the directory to confirm what ingestion would actually walk.
-
-**Worth flagging for review:** `docs/CORPUS.md` proposes one change to `CLAUDE.md` §6 — a
-conflict/deprecation rule in the generation prompt — because the shipped question set grades
-whether the answer identifies SDK v2 as deprecated. Retrieval alone cannot satisfy that
-question, so it is a prompt requirement, not a retrieval one.
-
----
+- **AI:** enumerated the corpus, measured token and heading distributions, wrote
+  `docs/CORPUS.md` and the first evaluation query set.
+- **Me:** required this step to exist at all — no chunking parameter could be committed before
+  the corpus had been read. The first pass proposed parameters from file counts alone and I
+  sent it back for the distribution, which is how the finding that mattered appeared: 546
+  bullet lines across the delivery reports, only **15 distinct**. That drove the whole
+  breadcrumb design.
 
 ### Step 1 — Monorepo scaffold
 
-- **AI did:** generated the pnpm workspace, `turbo.json`, the shared TypeScript strictness
-  config and per-workspace tsconfigs, the ESLint 9 flat config and Prettier setup, the
-  `docker-compose.yml` for Postgres 16 + pgvector, `.env.example` and `.gitignore`; then ran
-  install, build, typecheck, lint, format and the Postgres verification.
-- **I wrote/rewrote:** the scoping rule that frameworks are installed in the step whose code
-  needs them rather than all up front — the model's instinct was to scaffold NestJS and
-  Next.js immediately. Since I have to defend every line in the interview, a Nest CLI
-  scaffold I did not write is a liability, not a head start. Also mine: keeping the chunk of
-  config that varies per workspace (`module`, `target`, `lib`) out of the base tsconfig
-  instead of setting a default and overriding it twice.
-- **Got it wrong:** two things, both caught by running the commands rather than by reading.
-  (1) The first build failed outright — the packages expose subpath exports instead of barrel
-  files, but the generated tsconfigs used `moduleResolution: "node"`, the node10 resolver,
-  which silently ignores an `exports` map. TypeScript's own error text named the fix
-  (`Node16`). (2) More seriously, I found that the Step 0 commit had tracked all 143
-  `sample_dataset/` files and the case PDF, both of which `CLAUDE.md` forbids from ever
-  entering the repository.
-  (3) I reported the database as verified when it had in fact been verified on the wrong
-  Docker daemon. This machine has two Docker contexts — `default` and `desktop-linux` — and
-  the assistant's shell used one while my terminal used the other. Its container came up
-  healthy on `default` and sat there holding port 5432, so when I ran the exact verification
-  commands from the report, `docker compose up -d` failed with `address already in use`. The
-  blocking container was the one the verification had just created.
-- **How I caught it:** the resolution bug surfaced on the first `pnpm build`, before any code
-  depended on it. The dataset leak surfaced because I ran `git ls-files | wc -l` while
-  checking the toolchain and got 150 for a repo that should have had 7 — the file count was
-  the tell. Writing `.gitignore` was not sufficient on its own: gitignore has no effect on
-  files that are already tracked, so the index had to be corrected too. The Docker context
-  split surfaced when I ran the verification block myself and it failed on a machine where
-  it had supposedly just passed; `docker context ls` showed two daemons and
-  `docker --context default ps` found the squatting container.
-
-**Lesson kept:** a verification that runs in the assistant's environment is not a
-verification of mine. From here, "done" means the commands passed in my terminal, and the
-report says which environment produced any number it quotes.
-
----
+- **AI:** pnpm workspaces, Turborepo pipeline, the shared tsconfig chain, `docker-compose.yml`
+  for Postgres + pgvector, `.env.example`.
+- **Me:** the layout and the one-way dependency rule (`apps/*` → `packages/*`, and
+  `packages/rag` never importing `packages/db`) were mine and pre-committed; I checked the
+  scaffold against them rather than accepting the shape it proposed.
+- **Bug:** first build failed — the packages expose subpath exports but the tsconfigs used
+  `moduleResolution: "node"`, the node10 resolver, which silently ignores an `exports` map.
+  Switched to `Node16`.
+- **Bug (process, mine):** the Step 0 commit had tracked all 143 `sample_dataset/` files and
+  the case PDF, both forbidden. Spotted by running `git ls-files | wc -l` and getting 150 for a
+  repo that should have had 7. A `.gitignore` alone does not untrack; the history was rewritten
+  from the root.
+- **Bug:** the database was reported "verified" when it had been verified against a *different*
+  Docker daemon — this machine has two contexts. Lesson kept for the rest of the project: a
+  check that runs in the assistant's environment is not a check until I run it in mine.
 
 ### Step 2 — Database schema
 
-- **AI did:** wrote the six Drizzle tables with their indexes and comments, the env validator,
-  the connection factory, the argon2id helper, the migration runner and the idempotent seed;
-  generated the migration and ran the clean-slate cycle (`down -v` → `up` → `migrate` → `seed`)
-  plus a SQL smoke test of both retrieval paths.
-- **I wrote/rewrote:** the rule that enums are only for values this system owns. The first
-  draft had `doc_type` as a pgEnum listing the sample corpus's folder names — which would have
-  quietly made "point ingestion at a different directory" a schema migration and broken the
-  requirement in `CLAUDE.md` §5. `doc_type` and `lifecycle` are plain text for that reason.
-  Also mine: putting the argon2 parameters in one module that both the seed and Step 8's auth
-  import, rather than letting each declare its own.
-- **Got it wrong:** the build failed on the seed's upsert — the schema had a unique index on
-  `lower(email)`, but Drizzle's `onConflictDoUpdate` only accepts a column as its conflict
-  target, not an expression, so the code did not compile. The fix moved case-insensitivity from
-  the database to a `normalizeEmail()` call at the write boundary. That is a genuine trade: the
-  guarantee is now enforced by discipline instead of by the database, so if Step 8's login path
-  forgets to call it, a user who capitalises their email silently fails to log in. I recorded
-  it in `STATE.md` as a parking-lot item for Step 8 rather than trusting myself to remember.
-- **How I caught it:** `pnpm build` refused it — TS2322, `SQL<unknown>` is not an `IndexColumn`.
-  Worth noting that the type system caught a design problem, not a typo: the ORM had no way to
-  express what the schema was asking for.
-
-**Two things I found by running the documented commands myself**, after the assistant had
-reported the step complete:
-
-1. The env validator printed *two* error lines for one empty `DATABASE_URL` — a `.min(1)` and a
-   `.refine()` both firing. A fail-fast message exists to tell the reader what to do; saying it
-   twice in different words is noise. Collapsed to a single check.
-2. `pnpm db:migrate` on an already-migrated database dumped a full Postgres notice object to
-   stderr (`relation "__drizzle_migrations" already exists, skipping`). Harmless, but it looks
-   exactly like a crash to someone following the README, and the README is a scored deliverable.
-   The connection now filters the three `IF NOT EXISTS` duplicate-object notice codes and lets
-   everything else through — silencing all notices would have traded a cosmetic problem for a
-   diagnostic one.
-
-Both were invisible from reading the code and only appeared on the second run. Worth
-generalising: idempotency needs to be tested by actually running things twice.
-
-**Verified rather than assumed.** Three things I checked in the database instead of trusting the
-schema file: that `search_vector` really is a generated column (`attgenerated = 's'`, not a
-plain column someone must remember to fill); that both the HNSW and GIN indexes were actually
-created with those access methods; and that `ON DELETE CASCADE` removes a document's chunks. The
-generated column in particular only works because `to_tsvector` is given an explicit `'english'`
-argument — the one-argument form is not IMMUTABLE and Postgres rejects it in a generated column.
-
-**Note on the leak.** This is the failure mode the working agreement in `CLAUDE.md` §2.3 is
-designed to catch — the model proposes a commit, I run it. The `.gitignore` belonged to
-Step 1 while the commit happened at the end of Step 0, so the ordering in `PLAN.md` left a
-one-step window where the dataset was committable. Worth stating plainly rather than quietly
-fixing, since git history is a scored deliverable.
-
-**How it was actually resolved.** The first remediation did not work: `git commit --amend`
-landed on the tip commit rather than the root one, so the corpus stayed in history while
-Steps 1 and 2 got squashed into a single commit whose message still claimed the packages were
-"empty placeholders". Nothing had been pushed, so the history was rewritten from the root —
-`git reset --soft` to the root, unstage, `git rm --cached`, amend, then recommit the rest. Both
-commits now contain zero forbidden files, checked with `git ls-tree` rather than assumed.
-
-I chose **not** to split Steps 1 and 2 back apart. A reconstructed Step 1 commit would not
-compile, because `apps/api/src/main.ts` imports `@corpus-lens/db/client` and that module is
-Step 2's work. A history with a non-building commit in it is worse than an honest combined one,
-so the commit message was rewritten to describe both steps instead of hiding one.
-
----
+- **AI:** the Drizzle schema, the generated migration, the HNSW and GIN index DDL, the seed
+  script, the Zod env validator.
+- **Me:** the single-store decision (documents, chunks, users, analytics in one Postgres) was
+  mine and is the answer to "why not a dedicated vector DB". I reviewed the DDL closely —
+  index choice and the generated `tsvector` column are the two things I expect to be asked
+  about — but rewrote nothing.
+- **Bug:** the seed's upsert would not compile — Drizzle's `onConflictDoUpdate` accepts a
+  column, not `lower(email)`. Moved case-insensitivity to a `normalizeEmail()` call at the
+  write boundary, and recorded that Step 8's login **must** call it.
+- **Found by running twice:** the env validator printed two errors for one empty value, and a
+  second `db:migrate` dumped a Postgres notice object to stderr that reads like a crash. Both
+  invisible from reading the code.
 
 ### Step 3 — Shared contracts
 
-- **AI did:** wrote the nine Zod modules in `packages/shared` (role, error envelope, limits,
-  pagination, auth, search, answer, document, ingestion) with inferred types, replaced the
-  placeholder files in `apps/api` and `apps/web` with real contract imports, and ran the
-  boundary proofs.
-- **I wrote/rewrote:** two things that are security decisions rather than modelling ones.
-  `POST /ingest` originally took a `corpusDir` from the request body, which would have let any
-  authenticated admin point ingestion at any directory the API process can read — path
-  traversal presented as a feature. It now comes from `CORPUS_DIR` on the server. I also
-  removed the access token from the login response body: it travels in an httpOnly cookie, and
-  returning it in the body as well hands back precisely what the cookie flag exists to withhold.
-- **Got it wrong:** `pnpm build` reported success on a tree that could not actually compile.
-  I had deleted `packages/shared/src/package-info.ts`, but `packages/rag` still imported it —
-  and the build passed, because `tsc -b` leaves the output of deleted sources in `dist/` and the
-  stale `package-info.d.ts` was still there satisfying the import.
-- **How I caught it:** the green result did not match what I knew about the tree — I had just
-  deleted a module something else imported, so a passing build was the suspicious outcome, not
-  the reassuring one. Deleting `dist/` and rebuilding surfaced the real error immediately.
+- **AI:** the Zod schemas for every wire type and the inferred TypeScript types.
+- **Me:** the rule that types are *inferred from Zod and never hand-written twice* is mine;
+  the review here was checking that no DTO had quietly grown a parallel interface. It hadn't.
+- **Bug:** `pnpm build` passed on a tree that could not compile. A module `packages/rag` still
+  imported had been deleted, but `tsc -b` leaves the output of deleted sources in `dist/`, and
+  the stale declaration satisfied the import.
+- **Caught by:** the green build contradicting what we knew — something another package used
+  had just been deleted. Fix: package builds now `rm -rf dist` first, so a deleted source
+  cannot be propped up by its own leftovers.
 
-**The fix is worth more than the bug.** Package builds now run `rm -rf dist && tsc -b`, so a
-removed source can never be propped up by its own leftover output. Removing the stale directory
-first also meant dropping the packages' `typecheck` script: for a composite project `tsc -b`
-already *is* the type check, and leaving both tasks in place would have had two processes
-running `rm -rf dist` in the same directory concurrently. Package type errors still surface,
-because each app's `typecheck` depends on the packages being built first.
+### Step 4 — Chunking and embeddings
 
-**Boundary proofs, run rather than asserted.** Renaming `Role`'s `ADMIN` member fails
-`apps/api` with `TS2322`; renaming `AnswerResponse.answered` fails `apps/web` with `TS2551`.
-That is the Step 3 acceptance criterion demonstrated in both directions rather than claimed.
-
----
-
-### Step 4 — Chunking + embeddings
-
-- **AI did:** wrote the Markdown line scanner, the three-pass chunker (size split → merge →
-  absorb), the path-metadata deriver and breadcrumb builder, the `EmbeddingProvider`
-  interface with its token-aware batching, the OpenAI provider over raw `fetch`, the offline
-  deterministic provider, and 34 Vitest cases; then ran the chunker over all 142 corpus files.
-- **I wrote/rewrote:** three calls that are architecture rather than code.
-  (1) **A line scanner instead of `remark`.** The instinct was to reach for a Markdown AST.
-  But Step 0 had already measured the trap — every changelog indents its first bullet by four
-  spaces, which CommonMark reads as an indented *code block* — so the "correct" parser is the
-  one that gets this corpus wrong. The scanner needs to know two things, where headings are
-  and where fences are, and that is about ninety lines I can defend.
-  (2) **Raw `fetch` instead of the `openai` SDK.** What is actually being graded here is the
-  failure policy — a bounded timeout, one retry, and a transient-versus-permanent decision.
-  The SDK ships its own retry defaults, so using it would mean either inheriting a policy I
-  did not choose or switching it off and writing this anyway.
-  (3) **The offline provider is a product feature, not a test double.** It is selected by
-  `EMBEDDING_PROVIDER=deterministic` and carries the *same* input and batch limits as the
-  OpenAI one, so an offline run fails wherever an online run would. That is what makes
-  "clone it and watch it work without an API key" true, and it means the tests exercise the
-  same code path production uses instead of a parallel one that quietly rots.
-- **Got it wrong:** the content-budget floor. To stop a pathological breadcrumb from leaving
-  zero room for content, the first version clamped the budget with `Math.max(budget - head,
-  64)`. That silently *overrides* any configured budget below 64: a caller asking for a
-  20-token budget got 64 and was never told. It is the worst kind of bug — a guard that
-  ignores configuration and looks reasonable while doing it.
-- **How I caught it:** a test that fed a 20-token budget and asserted more than one chunk got
-  exactly one. The failure was in the test's expectation only by appearance; reading why the
-  split had not fired led to the constant. The fix makes the floor a *fraction* of the budget
-  (25%), so the rule is "a breadcrumb may not eat more than three quarters of the budget",
-  which holds at every scale instead of only above 64.
-
-**A dependency that had to be swapped after it compiled in Node but not in TypeScript.**
-`js-tiktoken` was the first choice for token counting and worked at runtime, but its package
-declares `"type": "module"` and offers no `types` entry under the `require` condition, so
-TypeScript's Node16 resolver refuses it from a CommonJS package while Node itself loads it
-happily. Replaced with `gpt-tokenizer`, which is dual-published properly and returns identical
-counts (both give 8 for the same probe string). Worth recording because the runtime check
-passed and the build still failed — a package working in `node -e` says nothing about whether
-its types resolve.
-
-**Evidence for the breadcrumb decision, rather than a claim.** Step 0 argued that filename
-metadata in the breadcrumb is the highest-leverage retrieval choice in the case, because the
-78 delivery reports are near-identical prose. Embedding all 142 chunks twice — once with the
-breadcrumb, once without — and querying *"Bubble Bakery December 2025 delivery report"*:
-
-```
-WITH breadcrumb      1. 0.285 delivery-reports/2025-05-bubble-bakery.md
-                     2. 0.272 delivery-reports/2025-07-bubble-bakery.md
-                     … all five results are Bubble Bakery delivery reports
-
-WITHOUT breadcrumb   1. 0.219 meeting-notes/2026-02-09-production-sync.md
-                     2. 0.162 meeting-notes/2025-09-22-production-sync.md
-                     … not one delivery report in the top five
-```
-
-Note the honest part: the *right* month (2025-12) ranks fourth, not first, because "December"
-and "12" share no characters for a lexical embedder. That is precisely the gap the keyword arm
-of RRF and the real embedding model close, and it is worth knowing before Step 6 rather than
-being surprised by it.
-
-**Verified rather than assumed.** The chunker was run over the real corpus, not just fixtures:
-142 documents produce **exactly 142 chunks**, one per document, min 45 and max 253 tokens
-including the breadcrumb. That is the number Step 0 predicted, which is the point of having
-predicted it — a materially different count would have meant a bug. The changelog's
-four-space-indented bullet is present and intact in the emitted chunk.
-
----
+- **AI:** the structural Markdown chunker, the breadcrumb prefix, the `EmbeddingProvider`
+  interface and its OpenAI implementation, batching and retry.
+- **Me:** "structural first, size second" and the breadcrumb format
+  (`Document > Section > Subsection`) were specified by me in advance; I asked for the
+  with/without measurement rather than accepting the claim that it helps.
+- **Bug:** the chunk budget had a floor of `Math.max(budget - overhead, 64)`, which silently
+  **overrides** any configured budget below 64. Ask for 20, get 64, never be told. Now a
+  fraction of the budget, so the rule holds at any scale. Caught by a test that set a 20-token
+  budget, expected a split, and got one chunk.
+- **Dependency swapped:** `js-tiktoken` loads fine under `node -e` but ships ESM-only *types*
+  against a dual runtime, which Node16 rejects from a CommonJS package. Replaced with
+  `gpt-tokenizer` (identical counts). A runtime check says nothing about type resolution.
+- **Measured, not claimed:** embedding all 142 chunks with and without the breadcrumb — with
+  it, all five top hits for "Bubble Bakery December delivery" are the right kind of document;
+  without it, **none** are.
 
 ### Step 5 — Ingestion pipeline
 
-- **AI did:** wrote the pipeline over its three interfaces, the filesystem corpus source with
-  SHA-256 hashing, the narrow front-matter parser, the version/lifecycle deriver, the Drizzle
-  store, the Zod-validated CLI with its summary table, and 17 new tests; then ran the whole
-  thing against Postgres and the real 142-document corpus.
-- **I wrote/rewrote:** where the pipeline lives. The obvious move was to put ingestion in
-  `packages/db` next to the schema, or in `packages/rag` next to the chunker. Both are wrong:
-  `packages/rag` may not import `packages/db` (CLAUDE.md §4), and a schema package has no
-  business knowing what ingestion is. Splitting it — orchestration over interfaces in `rag`,
-  the Drizzle implementation in `apps/api` as the composition root — costs one indirection and
-  buys two things I actually wanted: the entire run is unit-tested in memory with no Postgres,
-  and Step 9's `POST /ingest` will construct the same store rather than a second pipeline.
-- **Got it wrong:** two things, and the second is the more serious.
-
-  **(1) A first run over an empty database reported `added: 0, updated: 142`.** The upsert
-  infers which branch it took by comparing `createdAt` with `updatedAt`, and the insert branch
-  was setting `updatedAt: new Date()` — a JavaScript clock — against a `createdAt` filled by
-  Postgres's `defaultNow()`. Those two are never equal, so every insert looked like an update.
-  The Step 2 seed script does the same comparison and works, precisely because it does *not*
-  set `updatedAt` on insert; I had copied the idea without copying the condition that makes it
-  true.
-
-  **(2) Every failed document was writing the full SQL statement into the database.** Drizzle's
-  `error.message` is the entire failed query plus its bound parameters, and the pipeline stores
-  whatever message it catches in `ingestion_events.message` and `documents.error_message` —
-  both of which the admin dashboard will render in Step 12. So a failed insert would have
-  printed our schema and the document's contents into the UI, which is the exact thing
-  CLAUDE.md §7 forbids. The fix takes the driver error's `cause` (postgres.js puts the real
-  diagnosis there — "invalid input syntax for type date") and drops the message entirely when
-  there is no cause, rather than trusting it not to contain SQL.
-
-- **How I caught it:** neither showed up as a failure. The whole first run against Postgres
-  failed loudly for an unrelated reason — Postgres rejects `2025-12` for a `date` column, and
-  108 of 142 documents are dated by month — and it was reading *that* error output that showed
-  the SQL was being stored. The counting bug surfaced afterwards, from looking at a summary
-  table that said `added: 0` on an empty database. Both are cases where the exit code was not
-  the useful signal: one produced a green run with wrong numbers, the other a red run whose
-  real problem was not the one being reported.
-
-**On the date column.** Storing `2025-12` as `2025-12-01` is a deliberate precision loss and
-worth saying out loud, since it is a lie of one day: a monthly delivery report has no exact
-day. The alternative was widening the column to text, which would give up ordering and range
-queries — the only reasons the column exists. The breadcrumb still carries the original
-`2025-12` string, so retrieval sees the truth even though the column rounds.
-
-**Verified rather than assumed**, against the real corpus and a real database:
-
-```
-clean run     142 discovered · 142 added · 142 chunks · 1.9s
-immediate re-run  142 unchanged · 0 chunks written · 0.1s
---force           142 updated · 142 chunks
-```
-
-The second run is the one that matters: idempotency here is not "it succeeded twice" but "it
-did no work", and `chunks written: 0` is what proves nothing was re-embedded. Separately, in a
-three-file scratch corpus, editing one file and deleting another produced exactly
-`1 updated · 1 unchanged · 1 removed`. In the database afterwards: 142 documents all INDEXED,
-142 chunks all carrying both an embedding and a generated tsvector, and the doc_type
-distribution matching docs/CORPUS.md exactly (78 delivery reports, 30 meeting notes, 13 root,
-10 briefs, 6 changelogs, 3 guides, 2 postmortems).
-
-Two things I checked because they feed later steps rather than this one: `sdk-notes-v2` is
-stored with `lifecycle = deprecated` and `sdk-notes-v3` with `current`, which is the data Step
-7's conflict rule needs — the model will not have to notice the word "DEPRECATED" in the prose.
-And a `chmod 000` file produced `failed: 1` with the other documents still indexed, the error
-recorded against the right phase (PARSE) on both the document row and the event row, and a
-non-zero exit code so a README follower does not read "done" over an incomplete index.
-
-**A Step 4 escape, found here.** `pnpm typecheck` was not in the Step 4 verification block —
-I ran build, test, lint and format — and `apps/mcp/src/main.ts` still imported the
-`package-info` module Step 4 deleted. The commit builds and tests clean but does not typecheck.
-Fixed as part of this step and the verification block now runs all five. Worth recording
-because it is the second time a gate I did not run was the one that mattered.
-
----
+- **AI:** the directory walker, front-matter parsing, content hashing, the upsert, per-document
+  error isolation, run bookkeeping.
+- **Me:** required that ingestion take a **directory path as a parameter** with nothing about
+  the sample corpus hard-coded, and that one failed document must not abort the run. Both were
+  in `CLAUDE.md` before the step; I verified them by pointing the CLI at a three-file folder.
+- **Bug (security):** every failed document wrote the **entire SQL statement plus its bound
+  parameters** into `documents.error_message`, which the admin dashboard renders. Drizzle puts
+  the query in `error.message`. Now the driver's `cause` is used, and the message is dropped
+  entirely when there is none.
+- **Bug:** a first run over an empty database reported `added: 0, updated: 142`. The upsert
+  infers its branch from `createdAt === updatedAt`, but the insert set `updatedAt: new Date()`
+  — a JavaScript clock against Postgres's `defaultNow()`, never equal.
+- **Caught by:** neither was a test failure. The run died for an unrelated reason (Postgres
+  rejects `2025-12` for a `date` column) and reading *that* output exposed the SQL leak; the
+  counting bug came from a summary saying `added: 0` on an empty table.
 
 ### Step 6 — Hybrid retrieval
 
-- **AI did:** wrote the RRF implementation, the retriever over its repository interface, the
-  two SQL arms, the `pnpm eval` runner, and 24 new tests; then measured the whole thing
-  against the corpus twice — once with the offline embedder and once with
-  `text-embedding-3-small`.
-- **I wrote/rewrote:** the refusal to tune. When the eval came back 8/9 under the offline
-  embedder, the obvious move was to add the `doc_type` prior that `docs/CORPUS.md` §5 had
-  pre-registered for exactly this failure. I measured whether it would work before writing it,
-  and it would not — twice, for two different reasons. That measurement is the actual output of
-  this step; the code is the easy part.
-- **Got it wrong:** two things, one of which had made the headline feature not work at all.
-
-  **(1) The keyword arm was returning nothing, so "hybrid" retrieval was vector-only.** Every
-  Postgres tsquery constructor — `websearch_to_tsquery`, `plainto_tsquery`, `phraseto_tsquery`
-  — joins its terms with AND. Passing a question through therefore demanded that *every* lexeme
-  appear in one 200-token chunk:
-
-  ```
-  websearch_to_tsquery('english', 'How many vacation days do Lumen employees get per year?')
-    → 'mani' & 'vacat' & 'day' & 'lumen' & 'employe' & 'get' & 'per' & 'year'
-  ```
-
-  Zero matches. RRF was dutifully fusing one list with an empty one and every test passed,
-  because the unit tests fed it two lists and the SQL was never exercised without a database.
-
-  **(2) A provider error body wrote a partial API key into the database.** The comment above
-  `readBodySafely` asserted that provider error bodies "contain no secrets". A real 401 proved
-  otherwise: the response echoes the key back masked as `sk-or-v1***…73bf` — with its true last
-  four characters — and that string lands in `ingestion_events.message`, which the admin
-  dashboard renders. CLAUDE.md §9 says never log an API key, and a partial key is still a key.
-  Error bodies are now scrubbed of anything key-shaped before being kept.
-
-- **How I caught it:** the first one came from a column in my own output. The eval printer shows
-  each passage's rank in each arm, and the `k=` column was `—` on almost every row. I had added
-  that column for debugging later, and it caught the bug on its first run — which is the
-  argument for exposing `vectorRank` and `keywordRank` on the passage DTO rather than just the
-  fused score. The second came from an accident: the key I was given was an OpenRouter key, so
-  the request 401'd against `api.openai.com`, and reading the failure showed the key in it.
-
-**The pre-registered hypothesis, tested and refuted twice.** Step 0 predicted that the 78
-near-duplicate delivery reports would crowd out root reference documents, and committed in
-advance to a `doc_type` prior in fusion as the remedy. Both halves turned out to be wrong:
-
-- *With the offline embedder*, `style-guide-ui.md` reached fusion at rank 21 but sat behind five
-  **other** non-delivery-report documents, so capping the cluster would have promoted
-  `company-overview` and `sdk-notes-v3` instead of the style guide.
-- *With real embeddings*, it is worse and clearer: **all 40 candidates — 20 vector, 20 keyword —
-  are delivery reports.** `style-guide-ui.md` is at vector rank 69 and keyword rank 86 of 142.
-  It never reaches fusion at all, so no fusion-stage rule of any kind can promote it. Raising
-  the candidate budget to the entire corpus does not help either: its fused score would be
-  0.0146 against ~0.030 for the cluster.
-
-The crowding is real. It just happens one stage earlier than the hypothesis assumed, which is
-the sort of thing only measurement tells you.
-
-**What q7 actually is.** One more measurement settled it. The same document ranks **1st in both
-arms** for "What is the CTA contrast rule?" and 69th/86th for "Why does a low-contrast CTA keep
-coming up in delivery reports, and what is the rule?". The phrase "delivery reports" in the
-query activates the 78-document cluster in both arms simultaneously. So q7 is a multi-intent
-query — half of it is answered correctly and the other half is drowned — and the remedy is query
-decomposition or reranking, both already scoped in Step 19. It is not a defect in fusion, in
-chunking, or in the breadcrumb.
-
-I left q7 failing and the eval exiting non-zero rather than editing the query or tuning fusion
-around it. `eval/queries.yaml` says the shipped queries "must not be edited to make the numbers
-look better", and a probe I wrote myself deserves the same treatment.
-
-**Measured, with `text-embedding-3-small`:**
-
-```
-answerable queries: 8/9
-q1 applovin size limit      rank 1     q6 december merge marina    rank 4
-q2 sdk init / lumen.track   rank 1     q7 cta contrast rule        MISS (multi-intent)
-q3 audio separate pass      rank 2     q8 meta vs unity limits     rank 1
-q4 march 2026 rejections    rank 1     q9 delivery review owner    rank 1
-q5 minimum languages        rank 1
-
-all five shipped dataset queries (q1–q5) return their expected document at rank 1
-re-embed 142 chunks 65s · search ~450ms end to end, almost all of it the embedding call
-```
-
-**A finding Step 7 gets for free.** Across the eval set, in-corpus queries top out at
-0.0325–0.0328, while the fully off-domain q12 tops out at **0.0164** — which is exactly
-`1/(60+1)`, the signature of a single arm contributing with nothing agreeing with it. That is a
-2× separation for the retrieval score floor, and it falls out of RRF's structure rather than
-from a threshold I picked. The honest caveat is in the same numbers: q10 and q11 are also
-unanswerable and still top 0.0325, because `company-overview.md` is genuinely about the company.
-The floor is the cheap half of abstention; the prompt rule has to do the rest.
-
----
+- **AI:** the vector arm, the full-text arm, Reciprocal Rank Fusion, the repository interface
+  that keeps `packages/rag` free of database imports.
+- **Me:** RRF with k=60 over a weighted sum was my call and the reason is mine to defend (no
+  score normalisation needed between two incomparable scales). I also refused the pre-registered
+  `doc_type` prior once it was measured — see below.
+- **Bug (headline):** the keyword arm returned **nothing** on most queries, so "hybrid"
+  retrieval was silently vector-only. Every Postgres tsquery constructor ANDs its terms, so an
+  8-word question demanded all 8 lexemes in one 200-token chunk. Rewritten to OR.
+- **Caught by:** a column in our own evaluation output — the per-arm rank showed `k=—` on
+  nearly every row. All 75 unit tests passed throughout, because they feed fusion two lists and
+  never exercise the SQL.
+- **Bug (security):** a real 401 disproved the assistant's own comment claiming provider error
+  bodies "contain no secrets" — the response echoes the API key back, masked but with its real
+  last four characters, into a table the dashboard renders. Now scrubbed.
+- **A pre-registered fix, refuted:** Step 0 committed in advance to a `doc_type` prior for
+  near-duplicate crowding. Measured, it would not have worked — the target document never
+  reaches fusion at all. Not added.
 
 ### Step 7 — Grounded answering
 
-- **AI did:** wrote the `ChatProvider` interface and its streaming implementation, the system
-  prompt, the citation validator, the two-layer abstention in `answer.ts`, the `pnpm ask` CLI,
-  and 21 new tests; then ran the real thing against the corpus for both the answer case and all
-  three abstention cases.
-- **I wrote/rewrote:** the score floor, which arrived as a magic number. The first version had
-  `MIN_SCORE = 0.02` with a comment pointing at the Step 6 measurements — a value chosen because
-  it sat between the numbers I had just seen, which is the definition of fitting a threshold to
-  a sample. It is now derived: `1/(k+1) + 1/(k+candidates)`, the score of a chunk ranked first
-  by one arm and last-of-candidates by the other. That expression asserts one thing in English
-  — *at least one chunk was found by both retrieval arms* — and it happens to evaluate to
-  0.0289. Same behaviour, but now it is a rule rather than a number, and it moves correctly if
-  k or the candidate budget ever changes.
-- **Got it wrong:** the abstention detector. The first version searched the response for the
-  sentinel with `includes()`. That means a model which writes "the rule says to reply NO_ANSWER
-  when unsupported" — explaining the instruction rather than obeying it — has its real,
-  correctly-cited answer thrown away and replaced with "not in the corpus". It is a silent
-  failure in the worst direction: the system looks appropriately cautious while destroying good
-  output.
-- **How I caught it:** writing the test list rather than the code. Enumerating what the detector
-  must *not* fire on is a different exercise from enumerating what it must fire on, and the
-  second list is the one that finds this. It now compares the whole normalised response, while
-  still tolerating a sentinel the model wrapped in bold or a code fence.
-
-**A deviation from CLAUDE.md §3, recorded rather than quietly taken.** §3 specifies Anthropic
-Claude "via official SDK". The model is Claude — `anthropic/claude-sonnet-5` — but the transport
-is the OpenAI `/v1/chat/completions` wire format, because the credential available is an
-OpenRouter key and OpenRouter does not expose Anthropic's `/v1/messages`. Two things make this
-cheap rather than a compromise: Step 6 already built exactly this seam for embeddings, so there
-is one streaming parser and one retry policy in the repository rather than two; and the
-`ChatProvider` interface §3 actually asks for is untouched, so an SDK-backed implementation is
-one new file and one factory branch.
-
-**No offline chat provider, deliberately** — which is the opposite of the call I made for
-embeddings in Step 4. A hashing trick can stand in for an embedding model because both produce
-a vector whose only job is to be compared against other vectors. Nothing can stand in for
-generation: canned text would make the abstain rule and the citation validator *look* exercised
-when they had never run once. Search, ingestion and the dashboard all work with no chat key at
-all; asking a question is the single feature that requires one, and that is the honest place to
-draw the line.
-
-**Both abstention layers demonstrated, each firing on the case it exists for.** This is the part
-I would have got wrong by building only one:
-
-```
-"What is the recommended HNSW ef_construction value for pgvector?"   (fully off-domain)
-  → answered false · NO_RELEVANT_CONTEXT · top score 0.0164 · generate —ms · total 580ms
-    the model is never called
-
-"How many vacation days do Lumen employees get per year?"            (topic covered, answer not)
-  → answered false · MODEL_DECLINED · top score 0.0328 · generate 2284ms
-
-"What is the salary band for a senior developer at Lumen?"
-  → answered false · MODEL_DECLINED · top score 0.0325 · generate 2505ms
-```
-
-The floor cannot catch the last two: `company-overview.md` scores 0.0328 because it genuinely
-is about the company, it just does not mention holidays or pay. And the prompt rule cannot
-replace the floor either, because doing so would spend a generation call on every off-domain
-question. The prediction recorded at the end of Step 6 held exactly.
-
-**The graded conflict case, verbatim.** The dataset's question 2 is marked as requiring the
-answer to identify v2 as deprecated:
-
-> To initialize the current SDK (v3), call `LumenSDK.init(config)` before any game code runs
-> … [1]. `lumen.track` was the event method from the deprecated v2 SDK [2]. In v3, events are
-> sent with `LumenSDK.event(name, payload)` instead … [1]. Note that v2 is superseded by v3 and
-> should not be used for new playables [1][2].
->
-> [1] sdk-notes-v3.md · [2] sdk-notes-v2.md
-
-Worth noting *why* that works without any extra plumbing: the breadcrumb built in Step 4 puts
-the document title into the embedded text, and these two titles are "Lumen SDK v3 (current)" and
-"Lumen SDK v2 (DEPRECATED)". The supersession reaches the model because of a decision made three
-steps earlier for a different reason.
-
-**The near-duplicate case paying off end to end.** Asked about the December 2025 Merge Marina
-delivery, the model was shown six near-identical delivery reports and cited `[4]` — the correct
-month. Without `2025-12 · merge-marina` in each source header it could not have told source 4
-from sources 1, 2, 3, 5 and 6, because their bodies are drawn from the same fifteen sentences.
-
-**One contract detail this confirmed.** A real answer cited `[1][2][6]` — non-contiguous, because
-the model cites the sources it used rather than the first three it was given. That is exactly why
-`Citation` carries both `marker` and `sourceIndex` (Step 3), and it is a note for Step 11: the
-chat page must resolve markers, never assume the nth citation is the nth source.
-
----
+- **AI:** the numbered-source prompt, the `ChatProvider` interface and its Anthropic/OpenAI
+  implementation, server-side citation validation, the abstention path.
+- **Me:** the two-layer abstention (a score floor *and* a prompt instruction) and
+  `answered: boolean` on the DTO were specified by me before the step — abstention is a
+  first-class state in this system, not a paragraph of hedging.
+- **I rewrote:** the score floor arrived as `MIN_SCORE = 0.02`, a number picked because it sat
+  between two values that had just been measured. It is now derived from RRF's arithmetic, so
+  it means something in English and moves correctly if k or the candidate count changes.
+- **Bug:** the abstention detector used `includes()` on the sentinel, so a model *explaining*
+  the rule ("reply NO_ANSWER when unsupported") would have had its real, correctly-cited answer
+  discarded. Now compares the whole normalised response. Caught by writing the list of things it
+  must **not** fire on — a different exercise from listing what it must.
 
 ### Step 8 — Auth and authorization
 
-- **AI did:** wrote the refresh-token table and migration, the Nest bootstrap and module graph,
-  the token service, both guards and their decorators, the cookie helpers, the auth service and
-  controller, the exception filter, the request-id middleware and the Zod validation pipe, plus
-  22 end-to-end tests; then walked the whole flow over real HTTP with curl.
-- **I wrote/rewrote:** two things.
-
-  The **dummy password hash**. The first version was a hard-coded argon2 string, used to make a
-  failed login take the same time whether or not the account exists. It was fabricated — a
-  plausible-looking encoding that was not a real hash. `verifyPassword` rejects a malformed hash
-  in microseconds instead of the ~50ms a real verification takes, so the constant would have
-  produced exactly the timing difference it was written to remove, while looking like it worked.
-  It is now computed once at startup from random bytes, which cannot be got wrong.
-
-  The **direction of the guard default**. The first draft applied `@UseGuards` per controller.
-  That satisfies "authorization on every route" only for as long as nobody forgets, and Step 9
-  adds five endpoints where forgetting would be silent. Both guards are now global and routes
-  opt *out* with `@Public()`, so a forgotten decorator produces a locked door rather than an
-  open one.
-
-- **Got it wrong:** the entire API answered 500 on every route while 22 tests passed.
-
-  NestJS resolves constructor injection from `emitDecoratorMetadata`. **esbuild does not
-  implement it**, and `tsx` — which I had used for the other CLIs in this app — is esbuild. So
-  every injected dependency arrived as `undefined`, the first guard threw on
-  `this.reflector.getAllAndOverride`, and the exception filter dutifully turned it into a clean
-  `{"error":{"code":"INTERNAL"}}` for every single request, including login.
-
-  The reason the tests did not catch it is the part worth keeping: vitest transforms with SWC,
-  which *does* emit decorator metadata. **The test harness was more capable than the runtime.**
-  A green suite proved the code was correct under a compiler the server was never going to use.
-
-- **How I caught it:** by running the thing. The tests were green, so I started the server and
-  ran the flow with curl to have output for the report, and the first request came back 500. The
-  exception filter had already logged the real cause with a stack — which is the first time the
-  "log the truth, return a request id" split earned its keep.
-
-The fix is to compile the server with `tsc` and run it with `node`, leaving `tsx` for the CLIs,
-which have no decorators. Then the linter demanded the opposite mistake: `consistent-type-imports`
-flagged eight imports as type-only, and obeying it would have deleted the very runtime references
-`emitDecoratorMetadata` needs — reintroducing undefined dependencies with no compiler error. The
-rule is switched off for `apps/api` with that reason written down, because the next person to see
-those errors will otherwise "fix" them.
-
-**Design decisions worth defending in an interview:**
-
-*Refresh tokens are stored, hashed, rather than being self-contained JWTs.* A stateless refresh
-token can be rotated but never revoked, and — more importantly — reuse cannot be **detected**: a
-stolen token and the legitimate one are indistinguishable. With a table, presenting an
-already-rotated token means one of the two holders is an attacker, and since there is no way to
-tell which, the whole family is revoked and both must log in again. Failing loudly for the honest
-user is the right trade against leaving an attacker with a live session.
-
-*SHA-256 for refresh tokens, argon2id for passwords.* Opposite choices because the inputs are
-opposite. Argon2's cost exists to make guessing a human-chosen secret expensive; a refresh token
-is 256 bits from the CSPRNG, so there is nothing to guess and a slow hash would only add latency
-to every refresh.
-
-*The two JWT secrets must differ, checked at startup.* Both tokens are JWTs signed by this
-server, and the only thing stopping a refresh token being replayed as an access token is the key
-it verifies under. There is a test that a token signed with the refresh secret — forged to claim
-ADMIN — is rejected.
-
-**Verified over HTTP, not only in tests:**
-
-```
-GET  /auth/me                       401  UNAUTHORIZED
-POST /auth/login (admin)            200  no token in the body
-     Set-Cookie: cl_access=…   Path=/;             HttpOnly; SameSite=Lax
-     Set-Cookie: cl_refresh=…  Path=/auth/refresh; HttpOnly; SameSite=Lax
-POST /auth/register  as USER        403  FORBIDDEN
-POST /auth/register  as ADMIN       201
-POST /auth/refresh   rotate         200
-POST /auth/refresh   replay spent   401  → family revoked
-POST /auth/refresh   successor      401  (proves the revocation cascaded)
-Authorization: Bearer not.a.jwt     401
-```
-
-The refresh cookie's `Path=/auth/refresh` is visible in that output and is deliberate: the
-long-lived credential is not attached to every ordinary API call, only to the one route that
-consumes it.
-
----
+- **AI:** argon2id hashing, JWT access + rotating refresh tokens with reuse detection, the
+  global guard, `@Public()` and `@Roles()`, httpOnly cookie handling, the 403 tests.
+- **Me:** roles, the global-guard-with-opt-out shape (so a new route is protected by default
+  rather than by remembering), and the requirement that a `USER` token provably receives 403
+  from an admin route were mine, from `CLAUDE.md` §9.
+- **Bug:** the entire API answered **500 on every route**, including login, while 22 tests
+  passed. NestJS resolves injection from `emitDecoratorMetadata`; esbuild (via `tsx`) does not
+  emit it, so every dependency was `undefined`. The tests passed because vitest transforms with
+  SWC, which does. **The test harness was more capable than the runtime.** Fixed by compiling
+  the server with `tsc`. Caught by starting the server to collect curl output.
+- **Then the linter demanded the opposite mistake** — `consistent-type-imports` flagged the
+  injected types, and obeying it would delete the runtime references DI needs, with no compiler
+  error. Rule disabled for that app, with the reason written down.
+- **Bug (security):** the dummy hash used to equalise login timing was a fabricated argon2
+  string. `verifyPassword` rejects a malformed hash in microseconds instead of ~50ms — it would
+  have produced exactly the enumeration oracle it was written to close. Now computed at startup.
 
 ### Step 9 — API endpoints
 
-- **AI did:** wrote the stats contract, the RAG provider module, query logging, the search and
-  SSE answer endpoints, the documents, ingest and stats modules, the throttler configuration and
-  the Swagger setup; then exercised every route over HTTP with curl.
-- **I wrote/rewrote:** three things where the first attempt was the convenient shape rather than
-  the correct one.
-
-  **The ingest endpoint returned the finished run.** Awaiting the pipeline inside the request is
-  the obvious code and it is wrong here: a full pass is about a minute against a hosted
-  embedding model, which exceeds every proxy and browser timeout in between. It now returns 202
-  with the run row — measured at 60ms — and the client polls. That also happens to be what makes
-  the dashboard's live status possible, so the constraint improved the design.
-
-  **The SSE endpoint checked its chat provider too late.** The availability check sat inside the
-  service, which meant an unconfigured chat model would raise a 503 *after* the stream had
-  already sent a 200 status line, where the exception filter can no longer do anything. Anything
-  knowable before the first byte has to be checked before the first byte.
-
-  **The stats window was built with `sql.raw`.** The value is Zod-validated as a bounded integer,
-  so it was in fact safe — but "safe because of a validator three files away" is the reasoning
-  that stops being true the moment someone relaxes the validator. It is a bound parameter now,
-  which needs no argument at all.
-
-- **Got it wrong:** `GET /stats` returned 500 on the first real request, with
-  `row.last_indexed_at.toISOString is not a function`.
-
-  The generic on Drizzle's `db.execute<T>()` is an **assertion, not a check**. I had declared
-  `last_indexed_at: Date | null` and TypeScript simply believed me. A raw SQL query does not go
-  through the column-type decoding that the query builder applies, so Postgres's timestamp
-  arrived as a string. The compiler was satisfied, the build was green, and the route failed on
-  contact.
-
-- **How I caught it:** by calling the endpoint. It is the same lesson as Step 8 and it arrived
-  by the same route — everything compiled, everything passed, and the first curl found it. The
-  timestamp fields are now typed `unknown` and narrowed through one helper, which is the honest
-  description of what a raw query returns.
-
-**A dependency I did not add.** `@nestjs/swagger` builds its schemas from decorated DTO classes,
-which would have meant describing every payload twice — once as a Zod schema for the contract and
-the client, once as a class for the docs — with nothing keeping them in agreement. Zod 4 emits
-JSON Schema natively, so the documentation is generated from the same object that validates the
-request. Fourteen schemas across thirteen paths, no bridging library.
-
-**Verified over HTTP rather than asserted:**
-
-```
-POST /search    USER    200   0.0328 network-specs-applovin.md  (embed 551ms, retrieve 14ms)
-GET  /documents USER    403   ADMIN 200
-GET  /stats     USER    403   ADMIN 200
-POST /ingest    USER    403   ADMIN 202 in 60ms, status RUNNING
-POST /search    topK 9999     400  "topK: Too big: expected number to be <=20"
-POST /ingest    {"corpusDir":"/etc"} → ran against sample_dataset/corpus (field is not accepted)
-unauthenticated on all five new routes → 401
-
-/search rate limit, 35 requests:  17× 200 then 18× 429
-  {"error":{"code":"RATE_LIMITED","message":"Too many requests. Please wait a moment…"}}
-
-/answer SSE:  7 token frames, then 1 result frame
-  citations [(1, sdk-notes-v3.md), (2, sdk-notes-v2.md)]  timings embed 408 · generate 4860
-/answer SSE on an unanswerable question:  0 token frames, "NO_ANSWER" appears nowhere
-```
-
-That last line closes the parking-lot item from Step 7. When the model declines it emits the raw
-sentinel, and streaming it straight through would have made the user watch "NO_ANSWER" type
-itself out before being replaced. The guard holds tokens only while what has arrived is still a
-possible *prefix* of the sentinel — one token of delay for a real answer, nothing emitted for a
-refusal. It lives in `packages/rag` rather than in the API, so the MCP server and anything else
-added later gets it without knowing the problem exists.
-
-**Two things I fixed that were cosmetic but revealing.** The throttler's default message renders
-the literal string `"ThrottlerException: Too Many Requests"` into the error envelope — an
-internal class name in a user-facing field, which is the same habit that leaks a SQL statement
-somewhere more serious. And `abstainRate` now returns null rather than 0 when no questions have
-been asked, because "0% abstention" and "no data" are different states and a dashboard that draws
-them identically is lying about one of them.
-
----
+- **AI:** the search, answer and stats endpoints, DTO validation, the exception filter, the
+  throttler, SSE streaming, the query log.
+- **Me:** bounded `topK` and query length are mine and non-negotiable — an unbounded `topK` is
+  a denial-of-service against the LLM bill, not a convenience. I also required the single error
+  shape `{ error: { code, message, requestId } }` with no stack trace or SQL ever reaching a
+  client.
+- **Bug:** `GET /stats` returned 500 on the first real call. Drizzle's `db.execute<T>()` generic
+  is an **assertion, not a check** — a `Date` was declared, TypeScript believed it, and a raw
+  query skips column-type decoding so Postgres sent a string. Caught by calling the endpoint:
+  green build, dead route.
+- **Small but revealing:** the throttler rendered `"ThrottlerException: Too Many Requests"` into
+  a user-facing error, and `abstainRate` returned `0` when nothing had been asked — "0%
+  abstention" and "no data" are different facts.
 
 ### Step 10 — App shell and auth flow
 
-- **AI did:** installed Next 15 and Tailwind 4, wrote the token-based theme, seven UI
-  primitives, the login page and form, the app shell with role-aware navigation, the route
-  middleware, the error and not-found boundaries, and the two placeholder pages; then drove the
-  whole flow with a cookie jar as a browser stand-in.
-- **I wrote/rewrote:** the route protection, twice, and both rewrites came from evidence rather
-  than from reading the code again.
-- **Got it wrong:** two separate mistakes in the same feature, and the second is the one worth
-  remembering.
-
-  **(1) A 404 page served with HTTP 200.** A `USER` typing `/dashboard` got the not-found page —
-  correct content, wrong status. `notFound()` can only set a status while the response headers
-  are still open, and the `loading.tsx` in that route group creates a Suspense boundary: the
-  shell flushes as soon as the enclosing layout resolves, the status line is written as 200, and
-  the `notFound()` thrown later in the page arrives too late to change it.
-
-  **(2) Moving the check into a layout made it worse — it leaked the page.** The obvious fix was
-  to gate earlier, in a `dashboard/layout.tsx`. That produced a response containing *both* the
-  not-found markup and `"Corpus and analytics"` — the dashboard's own content — in the payload
-  sent to a `USER`. React receives `children` as already-constructed elements, so a layout's
-  `await` does not run *before* its children; they render alongside it. **An authorization check
-  in a layout does not prevent the page below it from executing.** Today that leaked placeholder
-  text. In Step 12 it would have leaked the document table.
-
-- **How I caught it:** the first one from `curl -w '%{http_code}'` while collecting output for
-  this report — the body said "Page not found" and the status said 200. The second from not
-  trusting the fix: I re-ran the check and grepped the *USER's* HTML for a string that should
-  only exist on the admin page. It was there. Neither would have shown up in a browser, because
-  a browser renders the not-found page and never mentions what else came down the wire.
-
-**The resulting design is better than what I started with.** Both problems disappear if the
-decision is made in middleware, before any rendering and while the status is still ours to
-choose. The middleware asks the API `/auth/me` rather than inspecting the cookie itself, which
-makes it a *verified* check — the alternative is copying the JWT signing secret into a second
-process to save one HTTP call. A `USER` reaching `/dashboard` is now redirected to `/chat`
-before a single byte of that page is rendered, and the page keeps its own `requireRole` because
-a matcher is a configuration line someone can narrow by accident.
-
-**Verified rather than asserted**, with a cookie jar standing in for a browser:
-
-```
-anonymous  /chat        307 → /login?next=%2Fchat
-anonymous  /dashboard   307 → /login?next=%2Fdashboard
-           ?next=https://evil.example → ignored, no redirect  (open-redirect guard)
-USER       /dashboard   307 → /chat   · dashboard content in payload: 0
-USER       /chat        200           · Dashboard nav link present: 0
-ADMIN      /dashboard   200           · Dashboard nav link present: 1
-signed in  /login       307 → /chat
-
-login: Access-Control-Allow-Origin: http://localhost:3000 · Allow-Credentials: true
-       cookies stored across ports (cookies ignore port, so :3000 and :3001 are one site)
-```
-
-**One thing I decided rather than defaulted.** There are no `dark:` variants anywhere in the
-app — 0 occurrences across every component. Colours are semantic tokens (`bg-surface`,
-`text-muted`) defined once for each scheme in `@theme`, and the media query swaps the values.
-Per-component `dark:` classes are how dark mode ends up correct on the pages someone looked at
-and broken on the rest, and with two more UI steps to come that seemed worth settling now rather
-than discovering later.
-
-**Deliberately still placeholders.** `/chat` and `/dashboard` render an empty state and say
-which step fills them in. The shell, the session handling, the navigation, the primitives and
-the three required view states are real; the content is Steps 11 and 12, and pretending
-otherwise in this report would be the easiest thing here to get wrong.
-
----
+- **AI:** the Next.js App Router shell, Tailwind theme tokens, the login form, the session
+  plumbing, the middleware.
+- **Me:** "hiding a nav link is not authorization" is my line from `CLAUDE.md` §9, and it is
+  what made me check the response body rather than the browser — which is the only reason the
+  leak below was found.
+- **Bug:** a forbidden route answered **HTTP 200** with the not-found page. `notFound()` cannot
+  set a status once a `loading.tsx` Suspense boundary has flushed the shell.
+- **Bug (worse):** moving the check into a layout **leaked the page it was guarding**. React
+  builds `children` before the layout resolves, so the guard runs *alongside* the page — the
+  dashboard's markup was serialised into the response sent to a user being turned away.
+- **Caught by:** checking status codes rather than bodies, then not trusting the first fix —
+  grepping the *rejected user's* HTML for a string only the admin page contains. It was there.
+  Neither is visible in a browser.
+- **Fix:** decide in middleware, before rendering, by asking the API — a verified check rather
+  than a cookie-presence guess.
 
 ### Step 11 — Chat page
 
-- **AI did:** wrote the SSE client, the citation-chip renderer, the source card, the chat panel
-  with its four states, and the page around them; then drove the whole thing against a running
-  API with both an answerable and an unanswerable question.
-- **I wrote/rewrote:** the abstention rendering. The first version showed the refusal in the
-  same error component as a failed request, which is wrong in a way that matters for this
-  product specifically: a failed request means the system is broken, and an abstention means the
-  system worked and the corpus has a gap. They now look different on purpose — abstention is
-  warning-toned rather than red, the two `abstainReason` values get different explanations
-  ("nothing scored highly enough to be worth asking the model" versus "the model read the
-  passages and declined"), and the retrieved passages are still shown underneath so the refusal
-  can be audited rather than taken on trust.
-- **Got it wrong:** nothing that reached a running page this step — which is itself worth a
-  sentence, because the two things most likely to have gone wrong had both already been caught
-  and written down as parking-lot items in earlier steps, and I built against those notes rather
-  than rediscovering them.
-
-**The citation bug that did not happen.** Step 7's report recorded that a real answer had cited
-`[1][2][6]` — markers are not contiguous, because the model cites only the sources it used and
-the server drops any that point at a source it was never given. The obvious implementation
-renders the nth citation as linking to the nth source. Both live questions this step happened to
-produce contiguous markers, so I checked the skip case deterministically instead of hoping for
-it:
-
-```
-markers written by the model: [1][2][6]
-  chip [1]  resolved->applovin.md        nth-citation->applovin.md        same
-  chip [2]  resolved->postmortem.md      nth-citation->postmortem.md      same
-  chip [6]  resolved->build-pipeline.md  nth-citation->unity-meta.md      NAIVE WOULD BE WRONG
-```
-
-The third chip would have scrolled to the wrong document. That is the worst class of bug in this
-feature: a citation exists so a reader can check a claim, and one that silently points somewhere
-else breaks that while still looking correct.
-
-**Two rules carried over rather than relearned.** The client's SSE reader holds a trailing
-partial frame between network chunks — the same rule the server's provider parser needed, for
-the same reason, and the same one that works perfectly on localhost and drops tokens under real
-latency. And a new question aborts the in-flight stream, because two overlapping streams append
-into the same state and interleave.
-
-**Verified against a running system:**
-
-```
-in-corpus question   8 token frames, then result
-                     markers [1,2] · citation.marker [1,2] · sourceIndex [0,1]
-                     [1] -> sources[0] sdk-notes-v3.md  OK
-                     [2] -> sources[1] sdk-notes-v2.md  OK
-
-unanswerable         0 token frames · "NO_ANSWER" appears nowhere in the stream
-                     answered false · MODEL_DECLINED · 6 passages still returned
-
-off-domain           answered false · NO_RELEVANT_CONTEXT · generateMs null (model not called)
-```
-
-The middle line is the Step 7 parking-lot item closing: the sentinel guard added in Step 9 lives
-in `packages/rag`, so the browser never sees the token even though it streams everything else.
-
-**On the "phone-width" criterion.** I verified the layout the way I could without a browser —
-the composition is flex-wrap throughout, there are no fixed pixel widths anywhere in the page,
-controls are 44px tall, the header sheds the email below `sm`, and the source cards truncate
-long titles rather than overflowing. What I have *not* done is look at it at 375px in a real
-browser, and the plan asks for that explicitly. It is the one claim in this report I would want
-to check myself before believing.
-
----
+- **AI:** the chat panel, streaming token rendering, citation chips, the source list, the
+  loading/empty/error states.
+- **I rewrote:** abstention initially reused the error component. A failed request and a refusal
+  are opposite events; conflating them tells the user the system broke when it did exactly what
+  it should. Abstention is now its own state, which is the whole point of `answered` existing.
+- **The bug that didn't happen, because Step 7 wrote it down:** citation markers are not
+  contiguous (a real answer cited `[1][2][6]`). The obvious implementation links the *n*th
+  citation to the *n*th source. Verified against the skip case: the third chip would have
+  scrolled to the wrong document.
 
 ### Step 12 — Dashboard
 
-- **AI did:** wrote the formatters, three more primitives (stat tile, table, pagination), the
-  overview with its index-health and analytics cards, the volume chart, the documents table with
-  filtering and pagination, the document detail with its chunks, the ingestion run list and
-  detail, and the live "run ingestion" button; then drove every page and every filter against
-  real data.
-- **I wrote/rewrote:** what gets drawn as a chart. The first pass had a chart per metric — a
-  small bar chart for document counts, another for latency. Almost none of that data is a chart:
-  a single current value is a stat tile, and rendering it as a one-bar bar chart adds an axis and
-  a plot area in order to communicate one number. Exactly one thing here is a genuine series over
-  time, and that one gets a column chart. The rest are numbers, laid out as numbers.
-- **Got it wrong:** a missing document answered **HTTP 200** with the not-found page.
-
-  This is the same defect I diagnosed in Step 10 and it had followed me here. `notFound()` can
-  only set a status while the response headers are still open; a `loading.tsx` creates a Suspense
-  boundary, the shell flushes, the status line is written as 200, and the `notFound()` thrown
-  afterwards is too late. In Step 10 I worked around it by moving the *authorization* decision
-  into middleware, which fixed the case I was looking at and left the underlying cause in place
-  for every other `notFound()` in the app.
-
-- **How I caught it:** by checking status codes rather than bodies. `curl -w '%{http_code}'`
-  against a random UUID returned 200 while the page said "Page not found" — the content was
-  right and the contract was wrong, which is the combination a browser will never show you.
-
-  This time I measured the cause instead of routing around it: removed the boundary, rebuilt,
-  and the same request returned 404. So `loading.tsx` now exists on `/chat` alone — the one route
-  with no not-found path — and the dashboard's detail pages get correct statuses. Nothing is
-  lost, because those pages are server-rendered in tens of milliseconds and the loading states
-  that actually matter live in the components that wait: the streaming answer skeleton and the
-  ingestion button's spinner.
-
-**A decision carried forward rather than relearned.** The dashboard layout holds sub-navigation
-and deliberately no role check, because Step 10 established that React builds a layout's children
-before the layout resolves — a gate there runs alongside the pages instead of in front of them.
-Every page calls `requireRole` itself, and the middleware has already redirected before either
-runs.
-
-**Two small things that are really product decisions.** `chunksMissingEmbedding` has its own tile
-with a warning tone rather than being folded into the chunk count: a chunk with no vector is
-invisible to the vector arm, so retrieval is silently incomplete and nothing else in the system
-would ever surface it. And the abstain rate renders as "—" rather than "0%" when nothing has been
-asked, because a dashboard that draws "no data" and "nothing was refused" identically is lying
-about one of them.
-
-**Verified against real data:**
-
-```
-ADMIN 200 · USER 307 → /chat        on /dashboard, /dashboard/documents, /dashboard/runs
-documents            1–20 of 142 · page 2 → 21–40 of 142
-search=merge-marina  1–10 of 10        search=sdk  1–2 of 2
-search=%             no matches        (the LIKE metacharacter is escaped, not a wildcard)
-document detail      Lumen SDK v2 (DEPRECATED) · lifecycle deprecated · version 2
-missing document     404              missing run  404
-POST /ingest         202, run appears in the table as API COMPLETED within 4s
-overview             142 documents · 142 chunks · 27,325 tokens · 0 failed · 0 missing embeddings
-```
-
-The `search=%` line is worth keeping: an unescaped `%` in a LIKE pattern matches everything, so
-the filter would have appeared to work while silently not filtering. It is not an injection —
-the term is a bound parameter — but it is the kind of bug that only shows up when someone types
-a punctuation character into a search box.
-
-**Still not verified, same as last step:** I have checked the layout composition — flex-wrap
-everywhere, tables that scroll inside their own container rather than overflowing the page, no
-fixed pixel widths — but I have not opened any of this at 375px in a real browser. That remains
-the one claim in these last three reports I would want to check myself.
-
----
+- **AI:** the document table with search and pagination, the ingestion-run view, the query
+  analytics, the admin actions.
+- **I rewrote:** the first pass had a chart per metric. Almost none of that data is a chart —
+  counts and latest-run status are read faster as numbers and a table, and a sparse line chart
+  over 40 queries implies a trend that does not exist.
+- **Bug:** a missing document answered **200** — the same defect as Step 10, which had only been
+  worked *around* there. This time the cause was measured: removed the Suspense boundary,
+  rebuilt, got 404. `loading.tsx` now exists only on the one route with no not-found path.
+- **Worth keeping:** `search=%` returns no matches, because the LIKE metacharacter is escaped.
+  Unescaped it matches everything — the filter would have looked like it worked while silently
+  not filtering.
 
 ### Step 13 — MCP server
 
-- **AI did:** moved the Drizzle retrieval adapter into `packages/db`, wrote the MCP server over
-  Streamable HTTP with its two tools, the bearer-token authentication and the environment
-  validation, and `apps/mcp/README.md` with the client config; then drove the protocol by hand —
-  initialize, tools/list, tools/call — and compared its output against the REST API's.
-- **I wrote/rewrote:** where the retrieval adapter lives. It had been sitting in
-  `apps/api/src/retrieval/` since Step 6, which was fine while one app used it and became wrong
-  the moment a second one did — an app cannot import another app. The tempting shortcut was to
-  have the MCP server call `POST /search` over HTTP, which would have worked and would have
-  quietly abandoned the claim the whole monorepo layout exists to support. Moving the adapter
-  into `packages/db` costs one dependency edge and makes the claim literal.
-
-  The edge is `db → rag`, which looks backwards until you name it: the *port*
-  (`RetrievalRepository`) belongs to the domain package, the *adapter* to the infrastructure
-  package, and an adapter depends on its port. `rag` still imports nothing from `db`, so
-  retrieval remains unit-testable with no database at all.
-
-- **Got it wrong:** nothing that survived to a running system this step. The one thing I nearly
-  reported as a defect turned out to be my own measuring instrument, which is worth recording
-  because I would have written down a false finding.
-
-  Comparing the same query through both front doors, one score came back as `0.0312` from the
-  API and `0.0313` from the MCP tool. My first instinct was that HNSW's approximate search had
-  returned slightly different neighbours. Before writing that down I ran the API three times in
-  a row and got an identical `0.03125` each time — so it was not run-to-run variance, and the
-  difference had to be in the comparison. It was: my extraction script formatted the API's score
-  with Python's `:.4f`, which rounds half-to-even, while the MCP tool renders with JavaScript's
-  `toFixed(4)`, which rounds half-up. `0.03125` is exactly the tie case. Re-running the
-  comparison with the same rounding on both sides gives byte-identical output.
-
-- **How I caught it:** by not trusting a one-digit discrepancy enough to explain it. The
-  explanation I had ready — approximate nearest-neighbour search — was plausible, which is what
-  made it dangerous; it would have gone into this document as a real characteristic of the
-  system. The check that killed it took thirty seconds.
-
-**The architectural claim, measured:**
-
-```
-same query, POST /search vs the search_corpus MCP tool
-
-API: guides/asset-naming.md@0.0325 | build-pipeline.md@0.0323 |
-     incident-postmortem-2026-03.md@0.0313 | client-briefs/gloom-garden.md@0.0284
-MCP: guides/asset-naming.md@0.0325 | build-pipeline.md@0.0323 |
-     incident-postmortem-2026-03.md@0.0313 | client-briefs/gloom-garden.md@0.0284
-                                              → identical
-```
-
-Not similar — the same `retrieve()`, the same SQL, the same fusion. The only thing that differs
-between the two front doors is the transport and the shape of the reply.
-
-**Authentication, and why it is two checks rather than one.** The signature is verified against
-the *same* `JWT_ACCESS_SECRET` the API signs with, which is what "validated against the same user
-store" means concretely: there is no second credential system to drift. On top of that the user
-is looked up by id, and the role is taken from the database row rather than the token's claim. A
-JWT is a bearer credential that cannot be withdrawn before it expires; an MCP client holds one by
-hand for far longer than a browser does, so a deleted or demoted account should stop working now
-rather than in fifteen minutes. The API can skip this because its tokens are short-lived and
-revocation bites at the refresh; here it is worth one query.
-
-**Verified:**
-
-```
-no token                     401 + WWW-Authenticate: Bearer realm="corpus-lens"
-garbage token                401 — tool names are not enumerable without one
-initialize                   protocol 2025-06-18, capabilities: tools
-tools/list                   search_corpus, get_document
-search_corpus topK=999       rejected: "Too big: expected number to be <=20 at topK"
-search_corpus docType=guide  only guides/* returned
-get_document (deprecated doc) surfaces lifecycle: deprecated in the metadata
-get_document unknown id      isError, not an exception
-```
-
-That last `lifecycle` line is deliberate rather than incidental: the corpus ships a deprecated
-document beside its replacement, and a client that cannot see which is which will quote
-superseded guidance as current — the same failure the answering prompt's conflict rule exists to
-prevent, arriving through a different door.
-
-**What I have not done.** I drove the protocol with curl — the real handshake, the real headers,
-the real SSE framing — but I have not attached a GUI MCP client such as Claude Desktop. The
-config in `apps/mcp/README.md` is written from the transport's requirements rather than from
-having watched a client consume it, and connecting one is the check I would want before calling
-this done. The token's 15-minute default lifetime is the part most likely to bite there.
-
----
+- **AI:** the MCP server over Streamable HTTP, the search tool, bearer authentication, the
+  tool-result formatting.
+- **Me:** insisted the MCP server authenticate its callers — it is a second front door to the
+  same data, and leaving it open would undo the API's auth work — and that it call the *same*
+  `retrieve()` rather than a reimplementation, which is the architectural argument for the
+  monorepo. The retrieval adapter moved to `packages/db` so both apps construct it; results
+  verified byte-identical.
+- **A false finding nearly recorded:** comparing the same query through the API and the MCP
+  tool, one score read `0.0312` versus `0.0313`, with a plausible explanation ready (HNSW is
+  approximate). Running the API three times first gave an identical value each time, so it was
+  not variance — it was the comparison script: Python's `:.4f` rounds half-to-even, JS
+  `toFixed(4)` rounds half-up, and `0.03125` is exactly the tie.
 
 ### Step 14 — Documentation
 
-- **AI did:** wrote `README.md` and `docs/ADR.md`, then executed the README's own setup
-  sequence against a genuinely clean clone and an empty database.
-- **I wrote/rewrote:** the limitations section, which is the part of a README most likely to be
-  quietly optimistic. Every entry there is a decision with its reasoning rather than a apology,
-  and two of them are admissions that something was *not verified* rather than that it does not
-  work — the UI has never been opened in a browser at 375px, and no GUI MCP client has ever been
-  attached. Both were tempting to leave out. They are the two claims in this repository I would
-  least want someone to discover for themselves in an interview.
-- **Got it wrong:** the README did not work. Twice, in two different ways, and neither was
-  visible from anything I had run before.
-
-  **(1) A missing `pnpm build`.** Following the setup sequence verbatim, `pnpm ingest` failed
-  with `Cannot find module .../@corpus-lens/db/dist/client.js`. The workspace packages are
-  consumed through their `exports` map, which points at `dist/` — and `dist/` does not exist on
-  a fresh checkout. `db:migrate` and `db:seed` had worked, because they run *inside*
-  `packages/db` with relative imports, so nothing before that step revealed the gap.
-
-  **(2) `pnpm dev` served a 500 on every web page.** The command the README tells a reader to
-  run. `packages/shared` emitted CommonJS only; webpack applies its React Refresh transform to a
-  workspace package's output, and that transform emits `import.meta.webpackHot`, which is a
-  parse error inside a CommonJS file. Every page importing a shared *value* — the login form's
-  Zod schema, the chat page's length limit — failed to compile.
-
-  I had built and run the web app in production mode a dozen times across Steps 10–12 and it was
-  always fine, because React Refresh is a development-only transform. The one thing I had never
-  done was request a page while `pnpm dev` was running.
-
-- **How I caught it:** by doing exactly what the plan says at this step — running the README on a
-  clean clone instead of reading it. Both failures took under a minute to surface and neither
-  was reachable from the repository I had been working in, where `dist/` had existed since Step 1
-  and where I always started the web app with `next start`.
-
-  My first fix for the second one was wrong, too: I removed `transpilePackages`, on the theory
-  that it was what pulled the package into Next's compilation. It changed nothing — a symlinked
-  workspace package resolves to a path outside `node_modules` and webpack treats it as
-  first-party either way. The actual fix is that a package consumed by both a CommonJS Node
-  process and a bundler has to ship both formats, so `packages/shared` now emits CJS and ESM
-  with an `exports` map that offers each to the right consumer.
-
-**The clean-clone run, end to end.** Cloned to a new directory, corpus copied in, `.env` from
-`.env.example`, fresh Postgres on an empty volume:
-
-```
-tracked files 188 · .env absent · sample_dataset absent · forbidden files 0
-
-pnpm install        ok
-pnpm build          ok            ← the step the README was missing
-docker compose up   0 tables before migrate
-pnpm db:migrate     Migrations applied
-pnpm db:seed        created ADMIN admin@demo.local · created USER user@demo.local
-pnpm ingest         142 discovered · 142 added · 142 chunks · 65.3s
-
-pnpm ask  (in corpus)     answered true, cited network-specs-applovin.md + the postmortem
-pnpm ask  (vacation days) answered false · MODEL_DECLINED
-pnpm eval                 8/9 answerable, q1–q5 all at rank 1
-pnpm typecheck / test     118 tests pass
-pnpm dev                  web 200 · api /docs 200 · mcp /health 200
-login with the README's demo credentials → 200, dashboard renders
-```
-
-The 8/9 reproducing on a machine that had never seen this project is the number I most wanted to
-confirm — it means the eval result is a property of the system rather than of my working
-directory.
-
-**On `docs/ADR.md`.** Twelve records, each written as decision / rejected alternative / why.
-Several of them exist because the rejected alternative was tried first and measured: the
-weighted-score fusion, the constant abstention threshold, the layout-level authorization check,
-the cookie-presence middleware. Those records are more useful than the ones where the first
-choice was right, and they are the ones I would expect to be asked about.
-
----
-
-## Closing note
-
-Fourteen steps, each one committed separately after review. The pattern that produced most of
-the value in this log is visible across all of them and worth stating plainly: **the compiler,
-the linter and the test suite were green for every single defect recorded here.** A CommonJS
-package that broke the dev server, an authorization check that leaked the page it was guarding,
-a 404 that answered 200, an ORM error message containing the whole SQL statement, an API key
-echoed into the database, a keyword arm that silently returned nothing, a dummy hash that
-defeated the timing attack it was written to prevent — every one of them was found by running
-the thing and looking at the output, and not one of them by reading the code again.
-
----
+- **AI:** the README, `.env.example` completion, the OpenAPI wiring, the MCP client config
+  snippet.
+- **Me:** required that this step be *executed*, not written — clone into an empty directory
+  and follow the README verbatim. Both bugs below exist only because that is a different
+  activity from proofreading it.
+- **Bug:** the README did not work. On a clean clone `pnpm ingest` failed — the packages are
+  consumed through `dist/`, which does not exist on a fresh checkout, and there was no
+  `pnpm build` step. `db:migrate` had hidden it by running inside the package with relative
+  imports.
+- **Bug:** `pnpm dev` served **500 on every web page** — the command the README tells people to
+  run. `packages/shared` emitted CommonJS only, and webpack's React Refresh transform injects
+  `import.meta` into it. The web app had been built and run a dozen times in production mode,
+  where Refresh does not exist. Fixed by emitting both CJS and ESM.
+- **The first fix was also wrong:** removing `transpilePackages`, on the assumption that it was
+  what pulled the package in. No change — a symlinked workspace package is first-party to
+  webpack either way.
 
 ### Step 15 — Self-updating ingestion (bonus)
 
-- **AI did:** wrote the scheduler, the chokidar watcher, the `--watch` and `--interval` CLI
-  flags and 8 tests; then ran it against a scratch corpus and watched it react to real edits,
-  additions, deletions and a simultaneous burst.
-- **I wrote/rewrote:** the split between the two files. The obvious shape is one module that
-  watches and runs. But the parts worth getting right — debounce a burst into one run, never let
-  two runs overlap, queue exactly one follow-up if a change arrives mid-run — are all *timing*
-  rules, and testing timing through a real filesystem watcher means real waiting and real
-  flakiness. Pulled into a scheduler with no filesystem and no database, they became 8 tests
-  with fake timers that run in 100ms. The watcher on the other side is thin enough to read in
-  one go.
-- **Got it wrong:** nothing in the feature — but I destroyed the working index while testing it,
-  and the way that happened is worth recording.
-
-  My test script truncated the tables before pointing the watcher at a 3-document scratch
-  directory. The truncate failed silently, because the clean-clone exercise in Step 14 had left
-  Postgres running under a *different* compose project, so `docker compose exec` from this
-  directory could not find the service — and I had sent its stderr to `/dev/null`. The container
-  was up and reachable on the same port, so ingestion worked fine; it simply ran against the
-  full 142-document index while looking at a folder containing three files, and correctly
-  removed the other 139.
-
-  The product behaved exactly as designed. The mistake was mine, twice over: silencing stderr on
-  a command whose failure I was depending on, and assuming a container is the container I think
-  it is because it answers on the expected port. That second one is the Step 1 Docker-context
-  lesson arriving again in a different costume.
-
-- **How I caught it:** the summary said `unchanged 3` when I had just emptied the table, and
-  those two facts cannot both be true. Reading the full log rather than the four lines I had
-  grepped for showed `removed 139` immediately.
-
-**A real bug found along the way.** `ingestion_runs.trigger` was written as
-`trigger === "API" ? "API" : "CLI"`, so every automatic re-index would have been recorded as
-someone running the command by hand. The enum has carried `WATCH` and `SCHEDULE` since Step 2
-and nothing had ever honoured them — the schema was written for this feature ten steps before
-the feature existed, and the store quietly discarded the distinction. It matters because the
-dashboard's entire purpose is telling an operator what happened while they were not watching,
-and "a run happened" is much less useful than "a run happened *because a file changed*".
-
-**Measured against a real directory, not only with fake timers:**
-
-```
-startup                    3 discovered · 3 unchanged · watcher ready
-edit one file              3 discovered · 1 updated  · 2 unchanged
-add a file                 4 discovered · 1 added    · 3 unchanged
-delete a file              3 discovered · 1 removed
-touch 5 files at once      → 1 run (not 5) · 3 updated
---interval 5, ~18s         → 3 SCHEDULE runs
-Ctrl-C during operation    → 0 rows left at status RUNNING
-
-ingestion_runs by trigger: WATCH 5 · SCHEDULE 3 · CLI 2
-```
-
-The burst line is the one the debounce exists for, and the last line is the bug above, fixed
-and visible.
-
-**What this does not do.** It re-classifies the whole corpus on every trigger rather than
-ingesting just the file that changed. That is deliberate: a rename is a delete plus a create, an
-editor's atomic save is a temp file plus a rename, and `git checkout` changes many files at
-once — the path-level optimisation is wrong for all three, while a full pass costs about a tenth
-of a second here because unchanged documents are skipped by hash without being re-embedded. On a
-corpus large enough for that to hurt, the classification is already the right place to add a
-path filter; the watcher would not need to change.
-
----
+- **AI:** the file watcher, the scheduled re-index, the trigger plumbing.
+- **Me:** chose which bonus items to attempt and in what order; this one first because it is the
+  one that makes the corpus rule ("pointing it at the real corpus is straightforward") true
+  rather than claimed.
+- **Bug found:** `ingestion_runs.trigger` was written as `trigger === "API" ? "API" : "CLI"`, so
+  every automatic re-index would have been logged as a manual one. The enum has carried `WATCH`
+  and `SCHEDULE` since Step 2 and nothing honoured them.
+- **Mistake worth recording:** the working index was destroyed during testing. The test script
+  truncated the tables first, but the truncate failed silently — Step 14's clean-clone exercise
+  had left Postgres under a different compose project, and stderr had been sent to `/dev/null`.
+  Ingestion then correctly removed 139 documents while pointed at a 3-file folder. Caught
+  because the summary said `unchanged 3` right after the table had been emptied.
 
 ### Step 16 — Evaluation harness (bonus)
 
-- **AI did:** wrote the metrics module, rebuilt `pnpm eval` to run three retrieval modes over
-  the same queries, added the abstention measurement behind `--answers`, added four
-  discriminating queries, and put the resulting table in the README and in `docs/ADR.md`.
-- **I wrote/rewrote:** the conclusion. See below — the table said something other than what I
-  expected, and the first draft of the write-up quietly emphasised the half that flattered the
-  design.
-- **Got it wrong:** not the code. The *evaluation set* was wrong, and it had been wrong since
-  Step 0 without anyone noticing, because it had never been asked a question it could fail.
-
-  The first run of the comparison produced this:
-
-  ```
-  hybrid    recall 0.889   MRR 0.750
-  vector    recall 0.889   MRR 0.726
-  keyword   recall 0.889   MRR 0.759
-  ```
-
-  Three identical recall figures is not a result, it is an instrument reading zero. Looking at
-  the per-query ranks showed why: **every one of the nine queries was found by both arms
-  independently**, usually at rank 1. The set could not distinguish the modes because nothing
-  in it was hard for either.
-
-- **How I caught it:** by not accepting a number I could not explain. Three modes agreeing to
-  three decimal places is either a coincidence or a measurement that is not measuring, and the
-  per-query breakdown answered it in one glance.
-
-**Fixing the instrument, not the result.** I added four queries chosen to be hard for a
-*specific* arm — two rare literal tokens (`MRAID` and `loop_complete`, one occurrence each in
-the corpus) and two paraphrases. That is a real risk of self-deception, so it is worth being
-explicit about the line: these probe failure modes the design *claims* to handle, and the
-expected document for each is the one a human would obviously cite. They are not tuned until
-hybrid wins — and in fact they did not make hybrid win.
-
-**The result, which is not what I expected:**
-
-| Mode | recall@6 | MRR |
-|---|---:|---:|
-| hybrid | 0.923 | 0.737 |
-| vector-only | 0.846 | 0.612 |
-| keyword-only | **0.923** | **0.833** |
-
-Hybrid beats vector-only decisively — `loop_complete` is missed **entirely** by the vector arm
-and found at rank 1 by keyword, which is precisely the blind spot the keyword arm exists to
-cover. But keyword-only matches hybrid on recall and beats it on MRR.
-
-I wrote two paraphrase queries specifically to find a case where keyword search fails. It found
-both at rank 1.
-
-**Why hybrid stays, stated as narrowly as the evidence allows.** Thirteen answerable queries is
-far too small a sample to drop an arm on, and this corpus — 23k tokens of internally consistent
-documentation where questions reuse the vocabulary of the documents answering them — is close
-to a best case for lexical matching. The MRR gap also has an intended cause rather than a
-mysterious one: `k = 60` flattens the top ranks so agreement between arms outweighs confidence
-within one, so a document keyword ranks 1st and vectors rank 5th lands at hybrid 2 or 3. That
-is the behaviour the constant was chosen for; the table shows what it costs.
-
-What the table honestly supports is narrower than "hybrid is better": *hybrid is never worse
-than the better arm on recall, and it removes the vector arm's blind spots*. That is the claim
-in the README, and the row that does not flatter the design is printed next to it. Retuning `k`
-until the table agreed with the architecture would be fitting the design to a 13-query sample —
-the same error `docs/CORPUS.md` refuses for chunk size.
-
-**Cut short by money.** The `--answers` run reached 7 of 16 queries before the API balance ran
-out (free tier, $0.14 spent):
-
-```
-q1–q7    answered = true   7/7 answerable correctly answered, 0 false refusals
-q10–q12  not reached
-```
-
-The floor layer needs no model and still holds independently — the fully off-domain question
-abstains at 0.0164 with the model never called. q10 and q11 returned `MODEL_DECLINED` in
-earlier runs of the same code against the same model. The README says all of this rather than
-quoting the earlier numbers as if this run had produced them.
-
----
+- **AI:** the labelled query set, recall@k / MRR computation, the per-arm comparison table.
+- **Me:** the decision that matters in this step is mine — **publish the table as measured**.
+  Hybrid beats vector-only decisively (`loop_complete` is missed entirely by embeddings), but
+  **keyword-only matches hybrid on recall and beats it on MRR**. Two paraphrase queries were
+  written specifically to find a case where keyword search fails; it found both at rank 1.
+  Hybrid is kept and the README's claim narrowed to what the evidence supports. Retuning until
+  the table agreed would be fitting the design to a 13-query sample.
+- **Bug in the instrument:** the first comparison gave three *identical* recall figures. That is
+  a reading of zero, not a result — every query in the set was found by both arms independently,
+  so nothing could distinguish them. Four queries hard for a specific arm were added.
 
 ### Step 17 — OIDC for the MCP server (bonus)
 
-- **AI did:** wrote the OIDC verifier, wired it as a selectable auth mode with startup
-  validation, documented provider setup for Auth0, Keycloak and Entra ID, and wrote 13 tests
-  that sign real tokens with a real key pair.
-- **I wrote/rewrote:** the decision not to follow the plan. `PLAN.md` says "replace the bearer
-  token with OIDC". Doing that literally would mean the MCP server could not be exercised at
-  all without first registering an application with a provider, configuring a client and
-  obtaining a token — for someone cloning the repository, a working feature becomes a
-  configuration exercise. It is a mode instead, defaulting to local, and both paths are fully
-  implemented. The deviation is recorded in `docs/ADR.md` rather than left for someone to
-  notice.
-- **Got it wrong:** I converted `apps/mcp` to ESM and had to revert it.
+- **Me (deviated from the plan deliberately):** OIDC is a *mode*, not a replacement for the
+  bearer token. Making it the only mode means a reviewer cannot try the MCP server without
+  registering an application first, which trades a bonus for the thing the case actually asks
+  for — that it runs on a fresh machine from the README.
+- **AI:** JWKS verification with `jose`, pinned algorithms, issuer/audience checks, the mode
+  switch.
+- **Bug:** `apps/mcp` was converted to ESM (jose is ESM-only) and had to be reverted. Every
+  Drizzle query broke — `packages/db` is CommonJS and resolves `drizzle-orm` via `require`, an
+  ESM app resolves it via `import`, so the compiler sees two copies of the types. The
+  dual-package hazard, strictly bigger than the problem it solved. jose is now loaded by cached
+  dynamic import. **This is the one defect in this log the compiler caught.**
 
-  `jose` 6 ships pure ESM with no CommonJS build, and it is not a library to work around —
-  hand-rolling JWKS fetching, key parsing and signature verification is precisely the
-  security-critical code nobody should write twice. Converting the app looked like the clean
-  answer, and the emit worked immediately.
+### Step 19a — Offline answering, cost, error classification (bonus)
 
-  Then the type errors arrived, in a place I did not expect: every Drizzle query in
-  `tools.ts` and `authenticate.ts`. `packages/db` is CommonJS and resolves `drizzle-orm`
-  through the `require` condition; an ESM app resolves the same package through `import`.
-  TypeScript therefore sees two distinct copies of drizzle's types, and every `SQL<unknown>`
-  crossing the boundary stops being assignable. That is the dual-package hazard, and it is a
-  strictly larger problem than the one I was solving.
+Prompted by `/answer` returning 500s during my own testing — which turned out to be an
+exhausted API balance, not a bug.
 
-- **How I caught it:** the compiler, immediately — this is the one defect in this log that a
-  green build would not have hidden. Worth noting for contrast: nearly everything else recorded
-  here compiled fine and failed at runtime. The reverted approach is documented in the tsconfig
-  and in ADR-015, because "why is this app not ESM when its main dependency is" is a question
-  someone will ask, and the answer is not obvious from the code.
+- **Me:** asked for three things: classify the failure correctly instead of reporting 500,
+  answer without a model when no credential works, and cut token cost. The automatic
+  behaviour — hosted model when the credential works, offline when it does not, recovering on
+  its own when the balance is topped up — is the shape I asked for; a startup probe would have
+  failed every request after credit ran out mid-session.
+- **AI:** the extractive answerer, the circuit-breaker fallback provider, error classification
+  (401/402/403 switch modes, 429/5xx do not), near-duplicate suppression, the `answerMode` field
+  and the UI notice.
+- **Me (the judgement call):** the offline mode is **labelled**, on the wire and in the UI,
+  rather than dressed up as the real thing. Across all 16 labelled queries no lexical threshold
+  separates "the corpus contains the answer" from "the corpus contains the words" — an
+  answerable query scores 0.29 while an unanswerable one scores 0.60 — so the extractive path
+  cannot perform the second abstention layer, and pretending otherwise would break the one
+  guarantee this system makes.
+- **Bug:** deduplicating passages for the prompt while validating citation markers against the
+  *original* list. Every marker after a dropped passage would resolve to the wrong document —
+  the Step 11 failure mode, reintroduced a minute after the dedup was written. One list is now
+  used for the prompt, the validation and the reported sources; three tests pin it.
+- **Bug, latent since Step 9:** the SSE handler rethrew after the stream had started, which
+  hands the error to Nest's filter, which writes headers already sent → `ERR_HTTP_HEADERS_SENT`,
+  real cause buried, truncated stream. It had never surfaced because no provider had failed
+  *mid-stream* before.
+- **Bug:** the tab icon was answered with a **307 to `/login`** — the middleware matcher excluded
+  `favicon.ico` but not `/icon.svg`. A browser will not render a redirect as an image, so the
+  favicon never appeared. Found by requesting the file rather than trusting the framework.
+- **Cost, measured rather than estimated:** `max_tokens` 700 → 400 (providers *reserve* against
+  it, which is what caused the 402), and near-duplicate suppression saving 6% on average.
+  Reported as 6%, not the 30% the raw duplicate count suggested. `topK` 6→4 would have saved 25%
+  and I declined it — an expected document sits at rank 4.
 
-**What OIDC actually buys, stated precisely.** In local mode this server holds the secret that
-mints credentials — it *could* forge one for itself. Under OIDC it holds only a public key: it
-can verify a credential and cannot create one. That is the property worth having, and it is why
-the mode exists even though the local one is not insecure.
+### Step 19b — Security review fixes (bonus)
 
-**The checks, and why the list is longer than "verify the signature".** Verifying the signature
-is the part every integration gets right; the rest is where they are quietly broken:
-
-- **`alg` pinned to asymmetric algorithms.** JWT libraries have historically honoured the
-  token's own `alg` header, so a token claiming `HS256` would be validated using the JWKS
-  *public* key as an HMAC secret — a key anyone can fetch. `none` needs no key at all. There is
-  a test that signs an `alg: none` token and asserts it is rejected.
-- **`iss` compared literally.** Without it, a token from any OIDC provider on the internet is
-  accepted, and anyone can create a tenant somewhere to obtain one.
-- **`aud` compared literally.** Without it, a token the user legitimately holds for a different
-  application at the same provider is replayable here.
-
-**On the tests.** Nothing about the verifier is mocked. Every token is genuinely signed with a
-generated RSA key pair, and every rejection is a genuine cryptographic or claim failure —
-mocking `jwtVerify` in a test *of* the verifier would prove only that the test agrees with
-itself. Thirteen cases:
-
-```
-valid token                                       accepted, subject and email mapped
-signed by a different key                         rejected
-issuer mismatch                                   rejected
-audience mismatch                                 rejected
-expired · not-yet-valid · no subject              rejected
-alg: none (unsigned)                              rejected
-roles array · space-separated string              → ADMIN
-realm_access.roles (nested path, Keycloak shape)  → ADMIN
-configured non-default admin value                → ADMIN
-missing · empty · wrong-typed · unrecognised ·
-  right value at the wrong configured path        → USER
-```
-
-That last line is the one I care most about. Role mapping is where a plausible-looking bug
-grants an attacker everything, so the default direction is tested from five angles rather than
-asserted in a comment.
-
-**A regression check that mattered.** After all of this, local mode still works: `tools/list`
-returns both tools with an API-issued token, and an unauthenticated request still gets 401.
-Adding a second authentication path is exactly the change that silently breaks the first one.
-
----
-
-### Step 19a — Offline answering, cost, error classification, logo (bonus)
-
-Driven by a question rather than by the plan: `/answer` started returning 500s, and the
-cause was an exhausted API balance rather than a bug. What followed was four related
-changes and four defects, two of which I introduced myself.
-
-- **AI did:** wrote the extractive answerer, the automatic fallback, the near-duplicate
-  suppression, the upstream error classification and the application mark; measured token
-  costs with the repository's own tokenizer; and ran every path against the real system.
-- **I wrote/rewrote:** the honesty boundary on the offline mode. The request was that a user
-  should feel an AI is answering. Built naively, that means shipping something that confidently
-  answers "how many vacation days do employees get" from unrelated sentences — reintroducing,
-  through the back door, the exact hallucination the whole system is designed to prevent. So
-  the mode is labelled rather than disguised: `answerMode` on the wire, a notice above every
-  extractive answer, a warning in the log when it switches.
-
-**A prediction from Step 7 that turned out to be right.** ADR-011 argued against an offline
-answerer on the grounds that it would make the abstain rule *look* exercised without running
-it. Half of that objection was answerable by construction — the extractive provider is a
-`ChatProvider`, so citation validation, sentinel detection, the score floor and streaming all
-genuinely run. The other half survived, and I measured it rather than assuming either way:
-
-| Signal | Answerable | Unanswerable | Separable? |
-|---|---|---|---|
-| question-word coverage | 0.29 – 1.00 | 0.00 – 0.60 | **no** |
-| best sentence overlap | 1 – 3 | 0 – 2 | **no** |
-
-Across all 16 labelled queries, no lexical threshold distinguishes "the corpus contains the
-answer" from "the corpus contains the words". q6 and q7 are answerable at 0.29 coverage while
-q11 is unanswerable at 0.60. Any rule that refuses the vacation question also refuses five
-genuine ones. That is why the offline mode is labelled instead of pretending: the judgement is
-semantic, and word overlap does not carry it.
-
-- **Got it wrong (1):** deduplicating passages for the prompt while validating citation markers
-  against the *original* list. Every marker after a dropped passage would have resolved to the
-  wrong document — silently, and invisibly in a browser. Precisely the Step 11 failure mode,
-  reintroduced by me about a minute after writing the dedup. Caught by asking what the marker
-  numbers indexed into; fixed by building one list and using it for the prompt, the validation
-  and the reported sources. Three tests pin it.
-
-- **Got it wrong (2):** the SSE handler had rethrown after the stream started **since Step 9**.
-  Rethrowing hands the error to Nest's exception filter, which calls `response.json()` on a
-  response whose headers went out with the first token — Express throws
-  `ERR_HTTP_HEADERS_SENT`, the real cause is buried beneath it, and the client gets a truncated
-  stream instead of the error frame it was just sent. It had never surfaced because no provider
-  had ever failed *mid-stream* before; Step 9 only tested the failure that happens before
-  headers are flushed.
-
-- **Got it wrong (3):** the tab icon was answered with a **307 to `/login`**. The middleware
-  matcher excluded `_next/static` and `favicon.ico` but not `/icon.svg`, which is where the App
-  Router serves it. A browser will not render a redirect as an image, so the favicon simply
-  never appeared — least of all for the signed-out visitor who sees the tab first. Found by
-  requesting the file instead of trusting that "Next handles icons".
-
-**On the cost work, including the part that did not pay off.** Measured with the project's own
-tokenizer rather than estimated:
-
-```
-system prompt         340 tokens, on every request
-average input        1540 → 1441 after deduplication   (6%; 14% on delivery-report queries)
-max_tokens            700 → 400                        (43% less reserved)
-```
-
-The `max_tokens` change is the one that mattered, and for a non-obvious reason: providers
-*reserve* against it rather than merely capping, which is why the 402 read "requested up to 700,
-but can only afford 178" while there was ample credit for the ~200-token answer actually
-produced.
-
-Deduplication is more modest than the raw duplicate-pair count suggested, and I have reported it
-as modest. A 0.8 overlap threshold only removes true repeats; loosening it to 0.7 would drop
-more tokens and risk collapsing the delivery reports that q6 exists to tell apart. And `topK`
-6→4 would have saved 25% — it was **not** taken, because q6's expected document sits at rank 4.
-Both are cases where the cheaper option was measurably worse.
-
-**The fallback design, and the alternative I rejected.** The obvious implementation checks the
-balance at startup and picks a provider. It solves the wrong problem: credit does not run out
-when a process starts — it ran out here in the middle of an evaluation run — and a server that
-chose at boot would then fail every remaining request. Attempting instead is self-correcting: a
-topped-up balance is discovered by the next request rather than by someone noticing and
-restarting. Only 401/402/403 trigger the switch, because a 429 or a 5xx is the provider being
-briefly busy, and abandoning the real model permanently over one bad second would trade a
-transient failure for a lasting quality loss.
-
-Verified against the genuinely exhausted account: request 1 attempts the hosted model and falls
-back, requests 2 and 3 go straight to the offline answerer, and exactly **one** warning appears
-in the log rather than one per request.
+- **Me:** asked for a read of the whole system against `CLAUDE.md` §9 before calling it done —
+  guards, controllers, MCP, input bounds, secret handling, dependencies — rather than taking
+  "the auth step passed" as an answer. Three findings came out of it; all three are fixed here.
+- **Bug (the real one):** the MCP server **authenticated its callers and then ignored who they
+  were**. `ToolDependencies.caller` was passed in and never read, so `get_document` — which
+  returns a document's entire text, and which the API restricts to `@Roles("ADMIN")` on
+  `GET /documents/:id` — was served to any valid token. A `USER` could read through MCP exactly
+  what the API answers with 403. The tool is now registered per role, so it is absent from
+  `tools/list` for a non-admin, and the handler re-checks.
+- **Bug:** the MCP endpoint had **no rate limit at all**, while the API throttles `/search` to
+  30/min precisely because it spends an embedding call — the same call `search_corpus` makes.
+  Limiting one front door and leaving the other open bounds nothing.
+- **Bug:** `/auth/login` was covered only by the global 120/min ceiling, which is 120 password
+  guesses a minute against a known email. Now 10/min. What this does *not* fix is written down
+  rather than implied: the limit is per IP, so a distributed attacker still gets 10 per address.
+- **Bug (mine, in the fix):** disabling the throttler for the auth test suite with
+  `overrideGuard(AppThrottlerGuard)` **silently did nothing** — the guard is registered under
+  the `APP_GUARD` token with `useClass`, so the class itself is not a provider token and there
+  was nothing to override. Caught immediately because the suite still failed with 429. Fixed by
+  replacing `ThrottlerStorage` instead.
+- **Verified against the running system, not only the tests:** a `USER`'s `tools/list` returns
+  one tool and an `ADMIN`'s returns two; a `USER` calling `get_document` by name gets "Tool
+  get_document not found"; the 61st MCP request in a minute returns 429 with `Retry-After` while
+  a different caller is unaffected; the 11th wrong password returns 429 in the standard error
+  envelope.

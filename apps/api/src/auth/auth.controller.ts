@@ -15,6 +15,7 @@ import {
   type SessionResponse,
   type User,
 } from "@corpus-lens/shared/auth";
+import { Throttle } from "@nestjs/throttler";
 import { type Request, type Response } from "express";
 
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
@@ -34,9 +35,14 @@ export class AuthController {
   /**
    * Admin-only, not public. This is a closed corpus of internal documentation; open
    * self-registration would be a way for anyone to read it (CLAUDE.md §9).
+   *
+   * Throttled anyway. The role guard already stops an anonymous caller, but each accepted
+   * call runs an argon2id hash — deliberately expensive — so a compromised admin token
+   * would otherwise be a CPU exhaustion vector against the API.
    */
   @Post("register")
   @Roles("ADMIN")
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   async register(
     @Body(new ZodValidationPipe(registerRequestSchema)) body: unknown,
   ): Promise<{ user: User }> {
@@ -44,8 +50,24 @@ export class AuthController {
     return { user: await this.auth.register(input) };
   }
 
+  /**
+   * Rate-limited well below the global ceiling, because this is the one public endpoint
+   * where repetition *is* the attack.
+   *
+   * The global limit is 120 requests a minute (app.module.ts), which is a sensible bound on
+   * ordinary traffic and a useless one here: 120 password guesses a minute against a known
+   * email is a working online brute force. Ten is generous for a human mistyping their
+   * password and hostile to a script.
+   *
+   * **What this does not do**, stated rather than implied: the throttler keys on IP, so a
+   * distributed attacker gets ten guesses *per address*. Closing that needs a per-account
+   * counter with lockout, which brings its own denial-of-service problem — anyone who knows
+   * an email can lock its owner out. That trade needs a decision this case does not call
+   * for, so it is bounded here and named in docs/ADR.md rather than half-built.
+   */
   @Post("login")
   @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @HttpCode(HttpStatus.OK)
   async login(
     @Body(new ZodValidationPipe(loginRequestSchema)) body: unknown,

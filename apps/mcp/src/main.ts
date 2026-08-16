@@ -7,6 +7,11 @@ import express, { type Request, type Response } from "express";
 
 import { UnauthenticatedError, authenticate } from "./authenticate";
 import { mcpEnv } from "./env";
+import {
+  DEFAULT_MCP_RATE_LIMIT,
+  DEFAULT_MCP_RATE_WINDOW_MS,
+  createRateLimiter,
+} from "./rate-limit";
 import { registerTools } from "./tools";
 
 /**
@@ -32,6 +37,11 @@ async function main(): Promise<void> {
     baseUrl: mcpEnv.OPENAI_BASE_URL,
   });
   const tokenCounter = createTokenCounter();
+
+  const rateLimiter = createRateLimiter({
+    limit: DEFAULT_MCP_RATE_LIMIT,
+    windowMs: DEFAULT_MCP_RATE_WINDOW_MS,
+  });
 
   const app = express();
   app.use(express.json({ limit: "1mb" }));
@@ -60,6 +70,20 @@ async function main(): Promise<void> {
       // Before anything MCP-shaped happens. An unauthenticated caller must not be able to
       // enumerate tool names, which is information about the system it has no claim to.
       const caller = await authenticate(request, db);
+
+      // After authentication, so the budget belongs to an account rather than to an
+      // address, and so an unauthenticated flood is rejected on the cheaper check first —
+      // the same ordering the API uses for its global guards (apps/api/src/app.module.ts).
+      const decision = rateLimiter.check(caller.id);
+      if (!decision.allowed) {
+        response
+          .status(429)
+          .set("Retry-After", String(decision.retryAfterSeconds))
+          .json(
+            jsonRpcError(-32000, `Rate limit exceeded. Retry in ${decision.retryAfterSeconds}s.`),
+          );
+        return;
+      }
 
       server = new McpServer({ name: "corpus-lens", version: "0.1.0" });
       registerTools(server, { db, embeddings, tokenCounter, caller });

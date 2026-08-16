@@ -4,8 +4,9 @@ Single source of truth for progress. Claude Code updates this at the end of ever
 step, before writing the completion report. Read it at the start of every session.
 
 **Current step:** 19 — polish (partially done); 18 (deployment) not attempted
-**Last completed step:** 19a — offline answering, cost, error classification, logo
-**Last commit:** `977837e` · Step 19a pending
+**Last completed step:** 19b — security review fixes (MCP role enforcement, MCP and login
+rate limits)
+**Last commit:** `464610e` · Step 19b pending
 
 | Step | Commit |
 |---|---|
@@ -27,6 +28,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 15 — Self-updating ingestion | `2ec329f` |
 | 16 — Evaluation harness | `4554311` |
 | 17 — OIDC for MCP | `977837e` |
+| 19a — offline answering, cost, logo | `7cffb26` `9b2c49f` `5ce880a` `464610e` |
 
 > **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
 > the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
@@ -78,6 +80,10 @@ substantial ones into `docs/ADR.md`.
 
 | Step | Decision | Reason |
 |---|---|---|
+| 19b | `get_document` is registered on the MCP server **only for an ADMIN caller** | The tool returns a document's whole text, which the API restricts to admins on `GET /documents/:id`. The caller was authenticated and then ignored, so a `USER` could read through MCP exactly what the API answers with 403. Registering per role means the tool is *absent* from `tools/list`, not present-and-refusing; the handler re-checks so a later refactor cannot reopen it. |
+| 19b | The MCP rate limit is keyed on the **caller id**, not the IP | The caller is authenticated before the limit is consulted, so identity is available and is the better key: one account behind a shared NAT is one budget, and evading it costs an account rather than an address. 60/min rather than the API's 30 because MCP makes several requests per user action. |
+| 19b | `/auth/login` and `/auth/register` get a 10/min throttle of their own | The global 120/min is a working online brute force against a known email. Constant-time verification and one error message already closed enumeration; this closes the rate. Keyed on IP, so a distributed attacker still gets 10 per address — closing *that* needs account lockout, which is its own denial of service (ADR-018). |
+| 19b | The auth e2e suite replaces `ThrottlerStorage`, not the guard | `AppThrottlerGuard` is registered under the `APP_GUARD` token with `useClass`, so the class is not a provider token and `overrideGuard` matches nothing — silently. Found by the suite still returning 429 with the override in place. |
 | 0 | Chunker splits on `##` then **greedily merges** adjacent sections up to the 500-token budget, instead of only splitting | Max document is 217 tokens, so a split-only chunker never fires. Merging makes the code correct on this corpus and portable to a corpus of long documents (`CLAUDE.md` §5). Yields ~142 chunks, 1 per document. |
 | 0 | Keep budget at 500 / overlap 60 rather than tuning down to the observed ~200 | Tuning to a 23k-token sample is overfitting and would break "point it at another folder". The structural rule does the work; the size rule is a safety valve this corpus never trips. |
 | 0 | Breadcrumb carries `doc_type · date · subject` from the path, not just headings — extends `CLAUDE.md` §6 | 78 delivery reports are built from 15 distinct sentences; body text cannot separate them, filename metadata can. Highest-leverage retrieval decision found in recon. |
@@ -370,7 +376,11 @@ anything manual.
 - Endpoints: `POST /search` and `POST /answer` (any authenticated role) · `GET /documents`,
   `GET /documents/:id`, `POST /ingest`, `GET /ingest/runs`, `GET /ingest/runs/:id`, `GET /stats`
   (ADMIN only) · OpenAPI at `/docs`, JSON at `/docs-json` (13 paths, 14 Zod-derived schemas).
-- Rate limits: global 120/min; `/search` 30/min; `/answer` 10/min. In-memory, per instance.
+- Rate limits: global 120/min; `/search` 30/min; `/answer` 10/min; `/auth/login` and
+  `/auth/register` 10/min; MCP endpoint 60/min **per caller id**. All in-memory, per instance.
+- MCP tools by role: `search_corpus` for any authenticated caller, `get_document` for ADMIN
+  only. Verified live — a USER's `tools/list` returns one tool, an ADMIN's returns two, and a
+  USER calling `get_document` by name gets "Tool get_document not found".
 - `POST /answer` streams SSE: `event: token` frames then one `event: result` with the validated
   citations, sources and timings; `event: error` if generation fails mid-stream.
 - Auth routes: `POST /auth/{login,refresh,logout}` are public, `POST /auth/register` is
