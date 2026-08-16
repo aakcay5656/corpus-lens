@@ -441,3 +441,82 @@ imports free through `resolution-mode: "import"`.
 
 **Consequence.** If the workspace ever moves to ESM, it has to move together — the packages
 first, then the apps. Converting one app in isolation does not work.
+
+---
+
+## ADR-016 — An extractive offline answerer, and what it cannot do
+
+**Decision.** `CHAT_PROVIDER=extractive` answers by selecting sentences from the retrieved
+passages, with no language model. The answer carries `answerMode` on the wire and the chat
+page labels it.
+
+**Rejected.** No offline answerer at all (the Step 7 position, ADR-011); and separately,
+an offline answerer that hides what it is.
+
+**Why the reversal.** ADR-011 argued that a stand-in for generation would make the abstain
+rule and the citation validator *look* exercised without ever running them. That objection
+is answered by construction rather than dropped: the extractive provider implements
+`ChatProvider`, so its output goes through the same citation validation, the same sentinel
+detection, the same score floor and the same streaming path. Nothing downstream is skipped
+or special-cased. It also cannot hallucinate, because it composes nothing — every sentence
+in its answer is a sentence from a retrieved passage.
+
+The practical case is stronger than it looked in Step 7: without it, an exhausted API
+balance takes the product's headline feature offline entirely, and a reviewer with no key
+cannot see the citation chips, the streaming, or the source panel work at all.
+
+**What it cannot do, measured rather than assumed.** ADR-011's core claim survives in a
+narrower form: an extractive answerer cannot perform the *second* abstention layer, because
+that layer requires judging whether text answers a question. Two attempts to approximate it
+lexically, over all 16 labelled evaluation queries:
+
+| Signal | Answerable range | Unanswerable range | Separable? |
+|---|---|---|---|
+| question-word coverage | 0.29 – 1.00 | 0.00 – 0.60 | **no** |
+| best sentence overlap | 1 – 3 | 0 – 2 | **no** |
+
+q6 and q7 are answerable at 0.29 coverage; q11 is unanswerable at 0.60. Any threshold that
+refuses the vacation-policy question also refuses five genuinely answerable ones. The
+distinction is semantic, and lexical overlap does not carry it.
+
+**Consequence, and the honest part.** Offline mode keeps the score floor — the fully
+off-domain question still abstains before anything is selected — but loses the prompt
+layer. So it *will* answer some questions the full system declines. That is stated in the
+README, carried on the response as `answerMode`, and rendered as a notice above every
+extractive answer. An offline mode indistinguishable from the real one would be the
+dishonesty ADR-011 was actually warning about; a labelled one is a demo affordance.
+
+---
+
+## ADR-017 — The provider falls back by attempting, not by probing
+
+**Decision.** `CHAT_PROVIDER=auto` (the default) calls the hosted model and switches to the
+offline answerer when the *credential* fails, with a cooldown before it tries again.
+
+**Rejected.** A startup balance probe; and separately, falling back on any error.
+
+**Why not a probe.** Checking the balance once at boot and picking a provider is the
+obvious design and it solves the wrong problem. Credit does not run out when a process
+starts — it ran out here halfway through an evaluation run — and a server that chose at
+boot would then fail every remaining request with the answer it had already committed to.
+Attempting is also self-correcting: a topped-up balance is discovered by the next attempt
+rather than by someone noticing and restarting.
+
+**Why only 401/402/403.** Those mean the credential itself is unusable and will fail
+identically until a human intervenes. A 429 or a 5xx means the provider is busy or briefly
+broken, and treating those the same would trade a moment's failure for a lasting quality
+loss — the system would quietly stop using the real model because of one bad second. Those
+propagate unchanged.
+
+**Two details that are not incidental.** Streamed tokens are withheld until the hosted
+model commits, because emitting a few words and then replacing them with a different
+answer from the fallback is worse than reporting the failure — so if the primary fails
+*after* streaming, the error is reported rather than papered over. And the cooldown means
+one doomed attempt per five minutes rather than one per request, which otherwise costs a
+network round trip on every question to rediscover an empty balance.
+
+**Consequence.** A degradation is possible without anyone asking for it, so it is declared
+rather than silent: `answerMode` on the response says which answerer produced the text, the
+chat page labels an extractive answer, and the switch is logged as a warning. Measured on
+an exhausted account: request 1 attempts the hosted model and falls back, requests 2 and 3
+go straight to the offline answerer, and exactly **one** warning appears in the log.

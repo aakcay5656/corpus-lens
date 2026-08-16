@@ -158,7 +158,27 @@ pnpm dev                      # web :3000 · api :3001 · mcp :3002
 
 Open <http://localhost:3000> and sign in with the credentials below.
 
-**Running without any API key.** `EMBEDDING_PROVIDER=deterministic` is the default in
+**Running without any API key.** Nothing needs configuring: `CHAT_PROVIDER=auto` is the
+default and resolves to the offline answerer when there is no working credential. With
+`EMBEDDING_PROVIDER=deterministic` as well, every feature works with no network at all —
+including asking questions.
+
+`auto` decides by *attempting*, not by a startup probe, because a balance runs out
+mid-session rather than at boot. Only 401/402/403 switch it — a rate limit or a 5xx is
+transient and must not permanently abandon the real model — and it retries after a
+cooldown, so topping up takes effect without a restart.
+
+The extractive answerer is not a language model. It selects the sentences from the
+retrieved passages that best match the question and cites them, streaming them so the UI
+behaves identically. It goes through the same citation validation and the same score floor
+as the real path, so it cannot invent a source. What it **cannot** do is judge whether the
+retrieved passages actually answer the question — measured across the 16 labelled
+evaluation queries, no lexical threshold separates "the corpus contains the answer" from
+"the corpus contains the words", so it will answer some questions the full system correctly
+declines. The chat page labels every extractive answer for that reason, and the response
+carries `answerMode` so no client has to guess.
+
+`EMBEDDING_PROVIDER=deterministic` is the default in
 `.env.example`, and it makes ingestion, search, the dashboard and the MCP tool work with
 no network and no credentials — useful for checking the system runs before spending
 anything. It is a real provider, not a test stub, and it carries the same input and batch
@@ -202,6 +222,7 @@ These are demo accounts on a local database. Change them for any real deployment
 | `OPENAI_BASE_URL` | OpenAI | Any gateway speaking `/v1/embeddings` — OpenRouter, Azure, vLLM |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | Some gateways need a prefix, e.g. `openai/text-embedding-3-small` |
 | `EMBEDDING_DIMENSIONS` | `1536` | Must match the `vector(n)` column; changing it needs a migration |
+| `CHAT_PROVIDER` | `auto` | `auto` falls back to the offline answerer when the credential fails; `openai` / `extractive` pin one |
 | `CHAT_MODEL` | `anthropic/claude-sonnet-5` | Only `/answer` needs this |
 | `CHAT_BASE_URL` | falls back to `OPENAI_BASE_URL` | |
 | `CHAT_API_KEY` | falls back to `OPENAI_API_KEY` | One gateway key usually covers both |
@@ -577,6 +598,8 @@ table.
 - [x] Evaluation harness: recall@k, MRR and a vector / keyword / hybrid comparison
 - [x] **Bonus** — offline embedding provider: the whole system runs with no API key
 - [x] **Bonus** — configurable provider base URL (OpenRouter / Azure / self-hosted)
+- [x] **Bonus** — extractive offline answerer with automatic fallback, so the *whole*
+      product runs with no API key and survives a balance running out mid-session
 - [x] **Bonus** — incremental re-indexing: `--watch` re-indexes on change, `--interval`
       on a timer; both re-embed only what changed
 - [x] **Bonus** — OIDC for the MCP server: JWKS validation with issuer, audience, expiry

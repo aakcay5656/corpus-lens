@@ -3,9 +3,9 @@
 Single source of truth for progress. Claude Code updates this at the end of every
 step, before writing the completion report. Read it at the start of every session.
 
-**Current step:** bonuses — 18 (deployment) and 19 (polish) remain
-**Last completed step:** 17 — OIDC for MCP
-**Last commit:** `4554311` · Step 17 pending
+**Current step:** 19 — polish (partially done); 18 (deployment) not attempted
+**Last completed step:** 19a — offline answering, cost, error classification, logo
+**Last commit:** `977837e` · Step 19a pending
 
 | Step | Commit |
 |---|---|
@@ -26,6 +26,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 14 — Documentation | `9d81d38` |
 | 15 — Self-updating ingestion | `2ec329f` |
 | 16 — Evaluation harness | `4554311` |
+| 17 — OIDC for MCP | `977837e` |
 
 > **Note on the history.** The first attempt committed all 143 `sample_dataset/` files and
 > the case PDF, both forbidden by `CLAUDE.md` §1 and §5, and a later `--amend` landed on
@@ -64,7 +65,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 16 | Evaluation harness | P2 | ✅ done |
 | 17 | OIDC for MCP | P2 | ✅ done |
 | 18 | Live deployment | P2 | ⬜ |
-| 19 | Polish | P2 | ⬜ |
+| 19 | Polish | P2 | 🔄 in progress |
 
 Status key: ⬜ not started · 🔄 in progress · ✅ done · ⏭️ deferred · ❌ cut
 
@@ -99,6 +100,14 @@ substantial ones into `docs/ADR.md`.
 | 3 | `POST /ingest` does **not** accept a corpus directory from the client | It would let an authenticated admin walk any directory the API process can read — path traversal dressed up as a feature. The directory comes from `CORPUS_DIR` on the server. |
 | 3 | Auth responses carry no tokens in the body | Access and refresh JWTs travel in httpOnly cookies; returning them in the body hands back exactly what the cookie flag exists to withhold. |
 | 3 | `Citation` carries both `marker` and `sourceIndex` | The server drops citation markers that do not match the supplied context, after which the surviving markers are no longer contiguous. The UI has to resolve what the model actually wrote, not what it should have written. |
+| 19 | `CHAT_PROVIDER=auto` decides by **attempting**, not by a startup probe | Credit runs out mid-session, not at boot — it ran out here during Step 16's eval run. A server that chose its provider at startup would then fail every remaining request. Only 401/402/403 switch it; 429 and 5xx are transient and must not permanently abandon the real model. Cooldown, so topping up needs no restart. |
+| 19 | An **extractive** offline answerer exists — reversing ADR-011 | The Step 7 objection (a stand-in makes the abstain rule and citation validator *look* exercised) is answered by construction: it is a `ChatProvider`, so it goes through the same validation, sentinel detection, score floor and streaming. It composes nothing, so it cannot hallucinate. |
+| 19 | **Measured and reported: the offline answerer cannot do the second abstention layer.** | Two lexical signals over all 16 labelled queries. Question-word coverage: answerable 0.29–1.00, unanswerable 0.00–0.60. Best sentence overlap: answerable 1–3, unanswerable 0–2. Neither separates. Any threshold refusing the vacation question also refuses five real ones. So the mode is **labelled**, not hidden — `answerMode` on the wire, a notice in the chat UI. |
+| 19 | `max_tokens` 700 → 400 | Providers *reserve* against this, not just cap: the 402 read "requested up to 700, can only afford 178" while having ample credit for the ~200-token answer actually produced. |
+| 19 | Near-duplicate passages are dropped from the prompt — **6% average, 14% on delivery-report queries** | Modest, and reported as modest. A 0.8 threshold only drops true repeats; loosening to 0.7 risks dropping the reports q6 must tell apart. `topK 6→4` would save 25% and was **not** taken: q6's expected document is at rank 4. |
+| 19 | Provider failures return `UPSTREAM_UNAVAILABLE`, not `INTERNAL` | The code existed in the envelope from Step 3 and nothing produced it. An exhausted balance is not "an internal error" — the server is fine, `/search` still works, and that is a materially different thing to tell a user. |
+| 19 | The SSE handler no longer **rethrows** after the stream has started | Latent since Step 9. Rethrowing hands the error to Nest's filter, which writes headers that are already sent → `ERR_HTTP_HEADERS_SENT`, the real cause buried under it and a truncated stream for the client. Only surfaced when a provider first failed *mid-stream* rather than before it. |
+| 19 | `icon.svg` had to be added to the middleware matcher exclusions | The tab icon was answered with a 307 to `/login`, and a browser will not render a redirect as an image — so the favicon never appeared, least of all for the signed-out visitor who sees it first. Found by requesting the file rather than trusting that Next "handles icons". |
 | 17 | OIDC is a **mode** (`MCP_AUTH_MODE`), not a replacement — `local` stays the default | Deviates from PLAN's "replace the bearer token". Making OIDC the only mode would mean the MCP server could not be exercised without first registering an application with a provider, turning a working feature into a configuration exercise for anyone cloning the repo. Both are fully implemented; the difference is one variable. |
 | 17 | `alg` is **pinned** to asymmetric algorithms rather than read from the token header | The single most important line in `oidc.ts`. Accepting `HS256` would let an attacker sign a token using the JWKS *public* key as the HMAC secret — it is public by definition; `none` needs no key at all. Tested: an `alg: none` token is rejected. |
 | 17 | `iss` and `aud` are compared literally, and both are required at startup | Without `iss`, a token from *any* OIDC provider on the internet is accepted. Without `aud`, a token the user legitimately holds for another application at the same provider is replayable here. Both have tests. |

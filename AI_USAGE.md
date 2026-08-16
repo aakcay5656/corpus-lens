@@ -1272,3 +1272,92 @@ asserted in a comment.
 **A regression check that mattered.** After all of this, local mode still works: `tools/list`
 returns both tools with an API-issued token, and an unauthenticated request still gets 401.
 Adding a second authentication path is exactly the change that silently breaks the first one.
+
+---
+
+### Step 19a — Offline answering, cost, error classification, logo (bonus)
+
+Driven by a question rather than by the plan: `/answer` started returning 500s, and the
+cause was an exhausted API balance rather than a bug. What followed was four related
+changes and four defects, two of which I introduced myself.
+
+- **AI did:** wrote the extractive answerer, the automatic fallback, the near-duplicate
+  suppression, the upstream error classification and the application mark; measured token
+  costs with the repository's own tokenizer; and ran every path against the real system.
+- **I wrote/rewrote:** the honesty boundary on the offline mode. The request was that a user
+  should feel an AI is answering. Built naively, that means shipping something that confidently
+  answers "how many vacation days do employees get" from unrelated sentences — reintroducing,
+  through the back door, the exact hallucination the whole system is designed to prevent. So
+  the mode is labelled rather than disguised: `answerMode` on the wire, a notice above every
+  extractive answer, a warning in the log when it switches.
+
+**A prediction from Step 7 that turned out to be right.** ADR-011 argued against an offline
+answerer on the grounds that it would make the abstain rule *look* exercised without running
+it. Half of that objection was answerable by construction — the extractive provider is a
+`ChatProvider`, so citation validation, sentinel detection, the score floor and streaming all
+genuinely run. The other half survived, and I measured it rather than assuming either way:
+
+| Signal | Answerable | Unanswerable | Separable? |
+|---|---|---|---|
+| question-word coverage | 0.29 – 1.00 | 0.00 – 0.60 | **no** |
+| best sentence overlap | 1 – 3 | 0 – 2 | **no** |
+
+Across all 16 labelled queries, no lexical threshold distinguishes "the corpus contains the
+answer" from "the corpus contains the words". q6 and q7 are answerable at 0.29 coverage while
+q11 is unanswerable at 0.60. Any rule that refuses the vacation question also refuses five
+genuine ones. That is why the offline mode is labelled instead of pretending: the judgement is
+semantic, and word overlap does not carry it.
+
+- **Got it wrong (1):** deduplicating passages for the prompt while validating citation markers
+  against the *original* list. Every marker after a dropped passage would have resolved to the
+  wrong document — silently, and invisibly in a browser. Precisely the Step 11 failure mode,
+  reintroduced by me about a minute after writing the dedup. Caught by asking what the marker
+  numbers indexed into; fixed by building one list and using it for the prompt, the validation
+  and the reported sources. Three tests pin it.
+
+- **Got it wrong (2):** the SSE handler had rethrown after the stream started **since Step 9**.
+  Rethrowing hands the error to Nest's exception filter, which calls `response.json()` on a
+  response whose headers went out with the first token — Express throws
+  `ERR_HTTP_HEADERS_SENT`, the real cause is buried beneath it, and the client gets a truncated
+  stream instead of the error frame it was just sent. It had never surfaced because no provider
+  had ever failed *mid-stream* before; Step 9 only tested the failure that happens before
+  headers are flushed.
+
+- **Got it wrong (3):** the tab icon was answered with a **307 to `/login`**. The middleware
+  matcher excluded `_next/static` and `favicon.ico` but not `/icon.svg`, which is where the App
+  Router serves it. A browser will not render a redirect as an image, so the favicon simply
+  never appeared — least of all for the signed-out visitor who sees the tab first. Found by
+  requesting the file instead of trusting that "Next handles icons".
+
+**On the cost work, including the part that did not pay off.** Measured with the project's own
+tokenizer rather than estimated:
+
+```
+system prompt         340 tokens, on every request
+average input        1540 → 1441 after deduplication   (6%; 14% on delivery-report queries)
+max_tokens            700 → 400                        (43% less reserved)
+```
+
+The `max_tokens` change is the one that mattered, and for a non-obvious reason: providers
+*reserve* against it rather than merely capping, which is why the 402 read "requested up to 700,
+but can only afford 178" while there was ample credit for the ~200-token answer actually
+produced.
+
+Deduplication is more modest than the raw duplicate-pair count suggested, and I have reported it
+as modest. A 0.8 overlap threshold only removes true repeats; loosening it to 0.7 would drop
+more tokens and risk collapsing the delivery reports that q6 exists to tell apart. And `topK`
+6→4 would have saved 25% — it was **not** taken, because q6's expected document sits at rank 4.
+Both are cases where the cheaper option was measurably worse.
+
+**The fallback design, and the alternative I rejected.** The obvious implementation checks the
+balance at startup and picks a provider. It solves the wrong problem: credit does not run out
+when a process starts — it ran out here in the middle of an evaluation run — and a server that
+chose at boot would then fail every remaining request. Attempting instead is self-correcting: a
+topped-up balance is discovered by the next request rather than by someone noticing and
+restarting. Only 401/402/403 trigger the switch, because a 429 or a 5xx is the provider being
+briefly busy, and abandoning the real model permanently over one bad second would trade a
+transient failure for a lasting quality loss.
+
+Verified against the genuinely exhausted account: request 1 attempts the hosted model and falls
+back, requests 2 and 3 go straight to the offline answerer, and exactly **one** warning appears
+in the log rather than one per request.
