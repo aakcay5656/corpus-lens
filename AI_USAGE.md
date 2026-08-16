@@ -396,3 +396,52 @@ exhausted API balance, not a bug.
 - **Result, with its cost:** hybrid recall@6 0.923 → **1.000**, all-expected 0.923 → **1.000**,
   and **MRR 0.737 → 0.721** — q9 lands at rank 2 instead of 1. Published with the regression
   visible in the per-query table rather than reported as a clean win.
+
+### Step 19d — Matched-term highlighting (bonus)
+
+- **AI:** the highlighter, and the move of the query tokenizer into `packages/shared` once
+  three consumers needed it (keyword arm, vector-arm rewrite, UI).
+- **Bug, would have crashed the page:** escaping the hyphen produced `low\-contrast`, and
+  under a `u`-flag regex that is an **invalid escape**, not a harmless one. Every question
+  containing a hyphenated term — "low-contrast" is this corpus's own vocabulary — would have
+  thrown while rendering the results. Found by running the matcher over a real passage, not by
+  the build.
+- **Bug I introduced fixing the first one:** an open-ended `\p{L}*` suffix marked "ruler" for
+  the term "rule" — a match Postgres would never make. Replaced with a closed inflection set.
+- **Me (the rule):** under-marking understates, over-marking lies. Short terms are skipped
+  entirely because Postgres discards stop words, so marking "how" or "the" would claim a match
+  that never happened. The visible cost — a three-letter acronym like "CTA" stays unmarked — is
+  accepted rather than fixed by copying a stop-word list into the browser bundle, which is the
+  duplication the shared tokenizer just removed.
+
+### Step 19e — Admin user management (bonus)
+
+- **AI:** the `/users` endpoints, the dashboard screen, the role control and the create form.
+- **Bug (silent, and the tests missed it too):** `hasActiveSession` was **always false**.
+  Interpolating `${users.id}` into a raw `sql` fragment renders the bare identifier `"id"`,
+  which inside the `exists (…)` subquery resolves to *refresh_tokens*`.id` — a token id
+  compared to a user id. Valid SQL, both uuid, matches nothing. Found by logging in and seeing
+  "no session" on the account I had just logged in with; fixed by building the subquery with
+  the query builder, which qualifies both sides.
+- **Me (the security decision):** a role change revokes the target's refresh tokens in the
+  same request. The access token they already hold still carries the old role until it
+  expires — that is the cost of verifying a JWT without a database read — so this bounds the
+  exposure to 15 minutes instead of a week. The e2e test asserts the revocation, because
+  every other test passes without it.
+- **Me:** no `POST /users`. `POST /auth/register` already owns hashing, normalisation, the
+  duplicate check and the admin guard; a second entry point is a second copy of those rules.
+- **Stated, not hidden:** the "last administrator cannot be demoted" refusal is not asserted
+  end to end — the tests share a database with `pnpm db:seed`, which always contains an admin,
+  so the count cannot reach zero. The positive half is asserted and the gap is written on the
+  test.
+
+### Step 19 — LLM reranking, not shipped
+
+- **Blocked by a measurement that cannot be taken.** The account can afford **168 output
+  tokens** — that number is quoted verbatim in the provider's 402. A reranker reads twenty
+  passages and emits an ordering; it cannot be run once here, so it cannot be compared against
+  the current ordering on the evaluation set.
+- **Me:** chose not to ship it default-off as an unmeasured seam. Every other retrieval
+  decision in this repository carries a number, including the ones where the number did not
+  say what I wanted (ADR-013). An unmeasured exception would be the weakest claim in the file
+  and the one I would be asked about.

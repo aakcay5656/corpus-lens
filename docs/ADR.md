@@ -626,3 +626,106 @@ embedding call.
 The rewritten text and the dropped terms are returned on the retrieval result, so a
 surprising ranking can be explained without re-running anything — a query rewrite that fires
 unexpectedly is otherwise invisible.
+
+---
+
+## ADR-020 — Highlighting marks fewer terms than it could, and never more
+
+**Decision.** Retrieved passages highlight the query's own terms, tokenised by the same
+function the keyword arm searches with, matched with a closed set of English inflections,
+and only for terms of four characters or more.
+
+**Rejected.** A stop-word list copied into the browser bundle; open-ended prefix matching;
+highlighting every term the user typed.
+
+**What it is for.** Answering "why did this come back?" without opening the dashboard. A
+passage that arrives with *nothing* marked is informative rather than broken — it is the
+visible difference between a lexical match and a semantic one, which is exactly the
+distinction hybrid retrieval exists to exploit.
+
+**Why the tokenizer moved to `packages/shared`.** Three places must agree on what a term
+is: the keyword arm searches for them, the vector-arm rewrite asks the database how common
+they are, and the UI marks them. A second splitter in the browser would highlight words the
+search never looked for — explaining the result incorrectly, and confidently. `shared` is
+also the only package built for both CommonJS and ESM, which is what lets a browser bundle
+import it (ADR-012).
+
+**Two measured corrections.** Escaping the hyphen produced `low\-contrast`, and under the
+`u` flag that is an *invalid escape* rather than a harmless one — every query containing a
+hyphenated term, which is this corpus's own vocabulary, would have thrown while rendering.
+Then a bare `\p{L}*` suffix marked "ruler" for the term "rule", a match the index would
+never have made.
+
+**The asymmetry that decides the rest.** Under-marking understates; over-marking lies. So
+the suffix set is closed (`s`, `es`, `ed`, `d`, `ing`, `ly`) and short terms are skipped
+entirely, since Postgres discards stop words and marking "how" or "the" would claim a match
+that never happened. The visible cost is that a three-letter acronym — "CTA", "SDK" — is a
+genuine match and is left unmarked. That is accepted rather than fixed with a hand-copied
+stop-word list, which would be the same duplication this design just removed.
+
+---
+
+## ADR-021 — A role change revokes sessions; the last administrator cannot be demoted
+
+**Decision.** `PATCH /users/:id/role` revokes the target's refresh tokens in the same
+request. An administrator cannot change their own role, and a demotion that would leave
+zero administrators is refused. Accounts are still created through `POST /auth/register`.
+
+**Rejected.** A `POST /users` creation endpoint; looking the user up on every request;
+deleting accounts.
+
+**Why revocation is part of the same operation.** The access token carries the role as a
+claim and is verified with no database read — that is what makes it cheap enough to put on
+every request, and it is also why a demotion cannot take effect instantly. Killing the
+refresh tokens bounds the exposure to one access-token lifetime (15 minutes) instead of the
+refresh lifetime (a week): the token already issued still works, but it cannot be traded
+for a new one. Closing the remaining window means a database read on every request, which
+buys a rare event with a permanent cost. The MCP server *does* pay it, because a token
+there is held by hand (ADR-018).
+
+**Why the two refusals.** Self-demotion is the classic footgun: the administrator loses the
+screen they did it from and nobody can undo it without database access. The
+last-administrator rule is the same failure reached a step later — registration is
+admin-only, so zero administrators is unrecoverable through the UI.
+
+**Why no create endpoint here.** `POST /auth/register` already owns argon2id hashing, email
+normalisation, the duplicate check and the admin guard. A second entry point would be a
+second copy of those four rules, and the copy is the one that gets forgotten when one of
+them changes. The dashboard's form posts there.
+
+**Not covered by a test, and stated rather than hidden.** The last-administrator *refusal*
+is not asserted end to end: the tests share a database with `pnpm db:seed`, which always
+contains `admin@demo.local`, so the count cannot reach zero. Forcing it would mean demoting
+every other administrator and restoring them afterwards — a test that leaves the
+developer's login broken if it fails halfway. The positive half is asserted.
+
+---
+
+## ADR-022 — LLM reranking is not shipped, and the reason is a measurement that cannot be taken
+
+**Decision.** The fourth item of Step 19 — reranking the fused top 20 with the language
+model — is not implemented.
+
+**Rejected.** Shipping it default-off as an unmeasured seam.
+
+**Why.** The account this project runs against can afford **168 output tokens**, which is
+the actual body of the 402 the fallback provider reports:
+
+```
+This request requires more credits, or fewer max_tokens. You requested up to 400
+tokens, but can only afford 168.
+```
+
+A reranker reads twenty passages — several thousand input tokens — and emits an ordering.
+It cannot be run here even once, so it cannot be compared against the current ordering on
+the evaluation set. That leaves two options: ship a feature whose only justification is
+that reranking usually helps, or leave it out. Every other retrieval decision in this
+repository carries a number (ADR-013, ADR-019), including the ones where the number did not
+say what was wanted. An unmeasured exception would be the weakest claim in the file, and it
+would be the one asked about.
+
+**Where it would have helped, if it could be measured.** Hybrid now leads on recall
+(1.000 against keyword-only's 0.923) and still trails on MRR (0.721 against 0.833) — the
+gap RRF's `k = 60` deliberately trades for robustness (ADR-006). Reordering the fused set is
+the natural lever on exactly that number, which is why it stays first on the "what I would
+do next" list rather than being quietly dropped.

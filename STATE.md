@@ -3,9 +3,11 @@
 Single source of truth for progress. Claude Code updates this at the end of every
 step, before writing the completion report. Read it at the start of every session.
 
-**Current step:** 19 — polish (partially done); 18 (deployment) not attempted
-**Last completed step:** 19c — query rewriting for the vector arm
-**Last commit:** `8fe5ddc` · Step 19c pending
+**Current step:** none — 19 closed; 18 (live deployment) not attempted, and it is the only
+remaining item in PLAN.md
+**Last completed step:** 19e — admin user management (Step 19 closed: rewriting, highlighting,
+user management done; LLM reranking not shipped, see ADR-022)
+**Last commit:** `8fe5ddc` · Steps 19c, 19d and 19e pending
 
 | Step | Commit |
 |---|---|
@@ -67,7 +69,7 @@ step, before writing the completion report. Read it at the start of every sessio
 | 16 | Evaluation harness | P2 | ✅ done |
 | 17 | OIDC for MCP | P2 | ✅ done |
 | 18 | Live deployment | P2 | ⬜ |
-| 19 | Polish | P2 | 🔄 in progress |
+| 19 | Polish | P2 | ✅ done (reranking cut — ADR-022) |
 
 Status key: ⬜ not started · 🔄 in progress · ✅ done · ⏭️ deferred · ❌ cut
 
@@ -80,6 +82,11 @@ substantial ones into `docs/ADR.md`.
 
 | Step | Decision | Reason |
 |---|---|---|
+| 19e | LLM reranking **not shipped** | The account can afford 168 output tokens; a reranker reads 20 passages and emits an ordering, so it cannot be run once, let alone compared on the eval set. Every other retrieval decision here carries a number — an unmeasured exception would be the weakest claim in the file. |
+| 19e | A role change revokes the target's refresh tokens in the same request | The access token carries the role and is verified without a database read, so a demotion cannot be instant. Revoking refresh bounds the exposure to one access-token lifetime (15 min) instead of a week. |
+| 19e | No `POST /users`; the dashboard form posts to `/auth/register` | Registration already owns hashing, normalisation, the duplicate check and the admin guard. A second entry point is a second copy of those rules. |
+| 19d | The query tokenizer moved to `packages/shared` | Three consumers must agree on what a term is — keyword arm, vector-arm rewrite, and now the UI highlighter. `shared` is also the only package built dual CJS/ESM, which is what lets a browser bundle import it. |
+| 19d | Highlighting matches a **closed** inflection set, and skips terms under 4 characters | Under-marking understates, over-marking lies. A bare `\p{L}*` marked "ruler" for "rule"; stop words would claim matches Postgres discarded. Cost: three-letter acronyms are left unmarked. |
 | 19c | The vector arm embeds a **rewritten** query (majority terms dropped); the keyword arm gets the question as asked | `ts_rank` discounts a common term already, an embedding cannot. Rewriting both arms scores better on q7 and destroys q9, where "delivery review" is the name of the process being asked about — no frequency statistic separates a document-class reference from a common proper noun, so the arm that can afford the terms keeps them. |
 | 19c | The threshold is "more than half the documents", not a tuned value | A term in a majority cannot narrow the corpus below half, so as a discriminator it has already failed. The number is where the property stops holding. |
 | 19c | Conjunction splitting was measured and **rejected** | It makes q7 *worse* (fused rank 34 vs — baseline): RRF is a vote, and each noisy sub-query contributes two more ranked lists that share the same bias. |

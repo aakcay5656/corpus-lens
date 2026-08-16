@@ -110,7 +110,7 @@ not the other way round.
 | MCP | `@modelcontextprotocol/sdk`, Streamable HTTP | Official SDK; HTTP is the transport that can carry a credential |
 | Auth | JWT access + rotating refresh, argon2id, httpOnly cookies | No third-party dependency to explain; reuse detection is demonstrable |
 | Validation | Zod in `packages/shared` | One definition is the contract, the runtime validator and the type |
-| Tests | Vitest | 170 tests: chunking, RRF, query rewriting, citations, abstention, ingestion, auth, MCP roles |
+| Tests | Vitest | 183 tests: chunking, RRF, query rewriting, citations, abstention, ingestion, auth, MCP roles |
 
 ---
 
@@ -247,7 +247,7 @@ Zod schemas that validate the requests — so the documentation cannot describe 
 the server does not enforce.
 
 Every route requires authentication except `POST /auth/{login,refresh,logout}`.
-`/documents`, `/ingest` and `/stats` additionally require `ADMIN`.
+`/documents`, `/ingest`, `/stats` and `/users` additionally require `ADMIN`.
 
 | Method | Path | Role | |
 |---|---|---|---|
@@ -262,6 +262,8 @@ Every route requires authentication except `POST /auth/{login,refresh,logout}`.
 | POST | `/ingest` | ADMIN | 202 + run id; runs in the background |
 | GET | `/ingest/runs`, `/ingest/runs/:id` | ADMIN | Run history and events |
 | GET | `/stats` | ADMIN | Dashboard aggregates |
+| GET | `/users` | ADMIN | Paginated, searchable; shows who has a live session |
+| PATCH | `/users/:id/role` | ADMIN | Changes a role **and revokes that user's sessions** |
 
 ### Examples
 
@@ -485,6 +487,11 @@ SDK v3 (current)" and "Lumen SDK v2 (DEPRECATED)".
   `/auth/login` and `/auth/register`, and 60/min per **caller** on the MCP endpoint. The
   login limit is the one that matters: 120 guesses a minute against a known email is a
   working online brute force, and the global ceiling alone would have allowed it
+- Changing a role revokes that user's refresh tokens in the same request. The access token
+  they hold still carries the old role until it expires — that is the cost of verifying a
+  JWT without a database read — so the exposure is bounded to 15 minutes instead of a week
+- An administrator cannot demote themselves, and the last administrator cannot be demoted
+  at all: registration is admin-only, so zero admins is unrecoverable through the UI
 - **The MCP server enforces roles, not just authentication.** `get_document` returns a
   document's whole text, which on the API is an `@Roles("ADMIN")` route, so it is
   registered only for an admin caller — a `USER` does not see it in `tools/list` and cannot
@@ -661,6 +668,8 @@ table.
 - [x] Rate limiting
 - [x] Evaluation harness: recall@k, MRR and a vector / keyword / hybrid comparison
 - [x] **Bonus** — query rewriting: majority terms dropped from the vector arm only
+- [x] **Bonus** — matched terms highlighted in retrieved passages
+- [x] **Bonus** — admin user management: list, create, change role
 - [x] **Bonus** — offline embedding provider: the whole system runs with no API key
 - [x] **Bonus** — configurable provider base URL (OpenRouter / Azure / self-hosted)
 - [x] **Bonus** — extractive offline answerer with automatic fallback, so the *whole*
@@ -738,7 +747,10 @@ Honest list. Each of these is a decision, not an oversight.
 ### What I would do next, in order
 
 1. **Reranking** the fused top 20 with a cross-encoder or the LLM — the remaining lever on
-   MRR, where hybrid still trails keyword-only.
+   MRR, where hybrid still trails keyword-only. It was in the plan for this build and was cut
+   rather than shipped unmeasured: the provider account can afford 168 output tokens, and a
+   reranker reads twenty passages before it emits an ordering, so it cannot be run here even
+   once (ADR-022).
 2. **A conversation-aware rewrite**, which is the version of query rewriting this one is
    not: resolving "it" and "that rule" against the previous turn needs a model, and the
    frequency rule shipped here deliberately needs nothing.
