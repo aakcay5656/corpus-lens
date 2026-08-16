@@ -2,7 +2,9 @@ import {
   Body,
   Controller,
   HttpCode,
+  HttpException,
   HttpStatus,
+  Logger,
   Post,
   Req,
   Res,
@@ -37,6 +39,8 @@ import { SearchService } from "./search.service";
  */
 @Controller()
 export class SearchController {
+  private readonly logger = new Logger(SearchController.name);
+
   constructor(private readonly search: SearchService) {}
 
   @Post("search")
@@ -105,6 +109,7 @@ export class SearchController {
         citations: result.citations,
         sources: result.sources,
         abstainReason: result.abstainReason,
+        answerMode: result.answerMode,
         timings: result.timings,
       };
       send("result", payload);
@@ -114,12 +119,35 @@ export class SearchController {
       // sanitised shape, and the message is never the raw exception text.
       send("error", {
         error: {
-          code: "INTERNAL",
-          message: "The answer could not be generated.",
+          // UPSTREAM_UNAVAILABLE rather than INTERNAL when a provider is the cause. The
+          // server is fine; a dependency is not, and search keeps working — which is a
+          // materially different thing to tell a user.
+          code:
+            error instanceof HttpException && error.getStatus() === 502
+              ? "UPSTREAM_UNAVAILABLE"
+              : "INTERNAL",
+          message:
+            error instanceof HttpException && error.getStatus() === 502
+              ? "The answer service is temporarily unavailable. Search is unaffected."
+              : "The answer could not be generated.",
           requestId: request.requestId,
         },
       });
-      throw error;
+
+      // Deliberately **not** rethrown.
+      //
+      // Rethrowing hands the error to Nest's exception filter, which calls
+      // `response.status().json()` — on a response whose headers went out with the first
+      // token. Express then throws ERR_HTTP_HEADERS_SENT, the original cause is buried
+      // under it, and the client receives a truncated stream instead of the error frame it
+      // was just sent. This was latent from the moment the endpoint was written and only
+      // surfaced when a provider first failed *mid-stream* rather than before it.
+      //
+      // The client has been told through the stream; the operator is told through the log.
+      this.logger.error(
+        `answer stream failed [${request.requestId}]: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
     } finally {
       if (!clientGone) response.end();
     }

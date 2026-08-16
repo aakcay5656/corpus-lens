@@ -1,4 +1,12 @@
-import { Inject, Injectable, ServiceUnavailableException } from "@nestjs/common";
+import {
+  BadGatewayException,
+  Inject,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from "@nestjs/common";
+import { ChatError } from "@corpus-lens/rag/chat-provider";
+import { EmbeddingError } from "@corpus-lens/rag/embeddings";
 import { answerQuestion, type AnswerResult } from "@corpus-lens/rag/answer";
 import { type ChatProvider } from "@corpus-lens/rag/chat-provider";
 import { type EmbeddingProvider } from "@corpus-lens/rag/embeddings";
@@ -24,6 +32,8 @@ import { QueryLogService } from "./query-log.service";
  */
 @Injectable()
 export class SearchService {
+  private readonly logger = new Logger(SearchService.name);
+
   constructor(
     @Inject(RETRIEVAL_REPOSITORY) private readonly repository: RetrievalRepository,
     @Inject(EMBEDDING_PROVIDER) private readonly embeddings: EmbeddingProvider,
@@ -33,14 +43,16 @@ export class SearchService {
   ) {}
 
   async search(request: SearchRequest, userId: string): Promise<SearchResponse> {
-    const { passages, timings } = await retrieve({
-      repository: this.repository,
-      embeddingProvider: this.embeddings,
-      tokenCounter: this.tokenCounter,
-      query: request.query,
-      topK: request.topK,
-      filters: request.docType === undefined ? {} : { docType: request.docType },
-    });
+    const { passages, timings } = await this.rethrowUpstream(() =>
+      retrieve({
+        repository: this.repository,
+        embeddingProvider: this.embeddings,
+        tokenCounter: this.tokenCounter,
+        query: request.query,
+        topK: request.topK,
+        filters: request.docType === undefined ? {} : { docType: request.docType },
+      }),
+    );
 
     await this.queryLog.record({
       userId,
@@ -86,18 +98,26 @@ export class SearchService {
     onToken?: (token: string) => void,
   ): Promise<AnswerResult> {
     this.assertAnswerAvailable();
-    if (this.chat === null) throw new ServiceUnavailableException("Answering is not configured.");
+    // Bound to a local before the closure: TypeScript cannot carry the null-narrowing of a
+    // mutable property across a callback boundary, and a non-null assertion is exactly what
+    // CLAUDE.md §7 forbids.
+    const chatProvider = this.chat;
+    if (chatProvider === null) {
+      throw new ServiceUnavailableException("Answering is not configured.");
+    }
 
-    const result = await answerQuestion({
-      repository: this.repository,
-      embeddingProvider: this.embeddings,
-      tokenCounter: this.tokenCounter,
-      chatProvider: this.chat,
-      question: request.question,
-      topK: request.topK,
-      filters: request.docType === undefined ? {} : { docType: request.docType },
-      onToken,
-    });
+    const result = await this.rethrowUpstream(() =>
+      answerQuestion({
+        repository: this.repository,
+        embeddingProvider: this.embeddings,
+        tokenCounter: this.tokenCounter,
+        chatProvider,
+        question: request.question,
+        topK: request.topK,
+        filters: request.docType === undefined ? {} : { docType: request.docType },
+        onToken,
+      }),
+    );
 
     await this.queryLog.record({
       userId,
@@ -116,5 +136,31 @@ export class SearchService {
     });
 
     return result;
+  }
+
+  /**
+   * Turns a provider failure into a 502 rather than letting it fall through as a 500.
+   *
+   * The error envelope has carried `UPSTREAM_UNAVAILABLE` since Step 3 and nothing had
+   * ever produced it. An exhausted API balance, a rate-limited provider or a timed-out
+   * embedding call are not "an internal error occurred" — the server is fine, a dependency
+   * is not, and that is a materially different thing to tell a caller. `/search` continuing
+   * to work while `/answer` does not is exactly the situation the distinction exists for.
+   *
+   * The message stays generic. The provider's own text can contain a partially masked API
+   * key (found in Step 6), so it goes to the log and never to the client.
+   */
+  private async rethrowUpstream<T>(action: () => Promise<T>): Promise<T> {
+    try {
+      return await action();
+    } catch (error) {
+      if (error instanceof ChatError || error instanceof EmbeddingError) {
+        this.logger.warn(`upstream provider failed: ${error.message}`);
+        throw new BadGatewayException(
+          "The answer service is temporarily unavailable. Search is unaffected.",
+        );
+      }
+      throw error;
+    }
   }
 }
