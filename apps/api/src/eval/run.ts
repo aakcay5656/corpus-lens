@@ -7,7 +7,7 @@ import { answerQuestion, minimumFusedScore } from "@corpus-lens/rag/answer";
 import { createChatProvider } from "@corpus-lens/rag/chat-provider-factory";
 import { createEmbeddingProvider } from "@corpus-lens/rag/embedding-provider-factory";
 import { embedAll, type EmbeddingProvider } from "@corpus-lens/rag/embeddings";
-import { splitQueryTerms } from "@corpus-lens/rag/keyword-query";
+import { splitQueryTerms } from "@corpus-lens/shared/query-terms";
 import { rewriteForVectorArm } from "@corpus-lens/rag/query-rewrite";
 import {
   DEFAULT_CANDIDATE_COUNT,

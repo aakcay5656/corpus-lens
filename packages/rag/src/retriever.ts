@@ -1,7 +1,7 @@
 import { type Passage, type SearchTimings } from "@corpus-lens/shared/search";
 
 import { embedAll, type EmbeddingProvider } from "./embeddings";
-import { splitQueryTerms } from "./keyword-query";
+import { splitQueryTerms } from "@corpus-lens/shared/query-terms";
 import { rewriteForVectorArm, type TermDocumentCounts } from "./query-rewrite";
 import { reciprocalRankFusion, type FusedEntry } from "./reciprocal-rank-fusion";
 import { type TokenCounter } from "./tokenizer";

@@ -168,6 +168,10 @@ export function ChatPanel() {
                   key={passage.chunkId}
                   passage={passage}
                   index={index}
+                  // The question the *result* was produced for, not what is in the input
+                  // box: the user may already be typing the next one, and highlighting
+                  // against that would mark words this passage was never matched on.
+                  query={result.question}
                   highlighted={activeSourceIndex === index}
                   cited={citedIndexes.has(index)}
                 />

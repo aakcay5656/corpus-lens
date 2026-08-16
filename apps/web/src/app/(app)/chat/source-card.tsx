@@ -5,6 +5,7 @@ import { type Passage } from "@corpus-lens/shared/search";
 
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/components/ui/cn";
+import { HighlightTerms } from "@/components/ui/highlight-terms";
 
 /**
  * One retrieved passage, as the user's means of checking a claim.
@@ -19,6 +20,8 @@ import { cn } from "@/components/ui/cn";
 interface SourceCardProps {
   passage: Passage;
   index: number;
+  /** The question, so the passage can show which of its words the search actually matched. */
+  query: string;
   /** True when a citation chip pointing here was clicked. */
   highlighted: boolean;
   /** True when the answer actually cited this passage, as opposed to merely retrieving it. */
@@ -27,7 +30,7 @@ interface SourceCardProps {
 
 const COLLAPSED_LENGTH = 260;
 
-export function SourceCard({ passage, index, highlighted, cited }: SourceCardProps) {
+export function SourceCard({ passage, index, query, highlighted, cited }: SourceCardProps) {
   const [expanded, setExpanded] = useState(false);
   const isLong = passage.content.length > COLLAPSED_LENGTH;
   const shown =
@@ -59,7 +62,9 @@ export function SourceCard({ passage, index, highlighted, cited }: SourceCardPro
 
       <p className="mt-1.5 break-words font-mono text-[11px] text-faint">{passage.breadcrumb}</p>
 
-      <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-muted">{shown}</p>
+      <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-muted">
+        <HighlightTerms text={shown} query={query} />
+      </p>
 
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-faint">
         <span title="Reciprocal Rank Fusion score — orders results within one query only">

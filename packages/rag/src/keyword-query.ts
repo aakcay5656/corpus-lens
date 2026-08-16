@@ -1,3 +1,5 @@
+import { splitQueryTerms } from "@corpus-lens/shared/query-terms";
+
 /**
  * Rewrites a natural-language question into an OR keyword query.
  *
@@ -23,6 +25,9 @@
  * *policy* decision (recall over precision), not a storage detail. The output happens to
  * be Postgres websearch syntax, which is the one thing the repository adds.
  *
+ * The tokenizer itself moved to `packages/shared` once three consumers needed it — see
+ * `query-terms.ts` for why a second splitter anywhere would be a silent bug.
+ *
  * Terms are joined with the literal word `or`, which `websearch_to_tsquery` reads as its
  * OR operator. Going through that function rather than assembling a `to_tsquery` string is
  * deliberate: it is the only constructor that cannot be made to raise on hostile input, so
@@ -31,28 +36,3 @@
 export function toKeywordQuery(query: string): string {
   return splitQueryTerms(query).join(" or ");
 }
-
-/**
- * The query's searchable terms, lower-cased, in order.
- *
- * Exported because `query-rewrite.ts` has to ask about the *same* tokens this arm searches
- * for — a rewrite that split words differently would drop a term the keyword arm never had.
- */
-export function splitQueryTerms(query: string): string[] {
-  return (
-    query
-      .toLowerCase()
-      // Split on anything that is not a letter, digit, or an intra-word `.`, `_` or `-`, so
-      // "low-contrast", "lumen.track" and "4.5" survive as single searchable terms.
-      .split(/[^\p{L}\p{N}._-]+/u)
-      .map((term) => term.replace(/^[-._]+|[-._]+$/g, ""))
-      .filter((term) => term.length > 0 && !OPERATOR_WORDS.has(term))
-  );
-}
-
-/**
- * `or`, `and` and `not` are websearch operators. A user typing them as ordinary words
- * would otherwise produce a dangling operator — harmless, since websearch never throws,
- * but it silently changes the query's meaning.
- */
-const OPERATOR_WORDS = new Set(["or", "and", "not"]);

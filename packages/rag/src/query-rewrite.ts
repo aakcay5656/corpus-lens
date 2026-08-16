@@ -1,4 +1,4 @@
-import { splitQueryTerms } from "./keyword-query";
+import { splitQueryTerms } from "@corpus-lens/shared/query-terms";
 
 /**
  * Rewrites the query that goes to the **vector arm only**, by dropping terms that appear in
